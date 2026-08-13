@@ -1,0 +1,7 @@
+interface:
+  display_name: "Map Behavior"
+  short_description: "Trace and document software behavior"
+  default_prompt: "Use $map-behavior to trace this flow through the repository and document its evidence-backed behavior."
+
+policy:
+  allow_implicit_invocation: true

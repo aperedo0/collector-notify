@@ -1,0 +1,7 @@
+interface:
+  display_name: "Communicate Clearly"
+  short_description: "Make explanations clear and easy to act on"
+  default_prompt: "Use $communicate-clearly to rewrite this so the intended reader can understand and act on it."
+
+policy:
+  allow_implicit_invocation: true

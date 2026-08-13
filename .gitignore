@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Dependencies and build output
+node_modules/
+.turbo/
+dist/
+build/
+coverage/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+credentials.json
+google-services.json
+GoogleService-Info.plist
+.secrets/
+
+# Local logs
+*.log

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Design Motion"
+  short_description: "Design accessible, stable interface motion"
+  default_prompt: "Use $design-motion to design or review this interface animation with accessible, stable behavior."
+
+policy:
+  allow_implicit_invocation: true

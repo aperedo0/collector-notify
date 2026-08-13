@@ -1,0 +1,129 @@
+{
+  "authority": {
+    "order": [
+      "PLAN.md",
+      "PRODUCT_SPEC.md",
+      "docs/UI_HANDOFF.md",
+      "tests",
+      "AGENTS.md",
+      "implementation"
+    ],
+    "note": "This manifest defers to the canonical authority order above. Screenshots are visual references only.",
+    "backgroundOnly": [
+      "docs/COMPETITOR_RESEARCH.md"
+    ]
+  },
+  "desktop": [
+    {
+      "file": "desktop/home-core-states.png"
+    },
+    {
+      "file": "desktop/home-loading-failure-and-browse.png"
+    },
+    {
+      "file": "desktop/browse-search-states.png"
+    },
+    {
+      "file": "desktop/browse-loading-failure-and-product-details.png"
+    },
+    {
+      "file": "desktop/product-details-alert-states.png"
+    },
+    {
+      "file": "desktop/alerts-core-and-edit-entry.png"
+    },
+    {
+      "file": "desktop/edit-alert-states.png"
+    },
+    {
+      "file": "desktop/alerts-delete-and-bulk-actions.png"
+    },
+    {
+      "file": "desktop/recent-and-desktop-notification.png"
+    },
+    {
+      "file": "desktop/account-and-notifications.png"
+    },
+    {
+      "file": "desktop/shared-system-states.png"
+    },
+    {
+      "file": "desktop/customer-flow-map.png"
+    }
+  ],
+  "mobile": [
+    {
+      "file": "mobile/home-core-states.png"
+    },
+    {
+      "file": "mobile/home-loading-failure-and-browse.png"
+    },
+    {
+      "file": "mobile/browse-search-states.png"
+    },
+    {
+      "file": "mobile/browse-loading-failure-and-product-details.png"
+    },
+    {
+      "file": "mobile/product-details-alert-states.png"
+    },
+    {
+      "file": "mobile/alerts-core-and-edit-entry.png"
+    },
+    {
+      "file": "mobile/edit-alert-states.png"
+    },
+    {
+      "file": "mobile/alerts-delete-and-bulk-actions.png"
+    },
+    {
+      "file": "mobile/recent-and-push-notification.png"
+    },
+    {
+      "file": "mobile/account-auth-and-shared-states.png"
+    }
+  ],
+  "knownOverrides": {
+    "global": [
+      "Legacy Pok\u00e9 Watch branding -> Notify",
+      "Target-only customer-facing V1",
+      "PLAN.md and PRODUCT_SPEC.md behavior overrides screenshot-only controls",
+      "Product Details secondary Open at Target per D16",
+      "Recent Detail primary Open at Target per D16"
+    ],
+    "desktop": {
+      "alerts-core-and-edit-entry": [
+        "Alerts empty Browse Products CTA is canonical and routes to /browse"
+      ],
+      "recent-and-desktop-notification": [
+        "Add Open at Target to Recent Detail even if absent"
+      ],
+      "home-loading-failure-and-browse": [
+        "Use canonical generic load-error copy"
+      ],
+      "browse-loading-failure-and-product-details": [
+        "Use canonical generic load-error copy"
+      ]
+    },
+    "mobile": {
+      "product-details-alert-states": [
+        "Ignore market price/history, set/category/release metadata"
+      ],
+      "alerts-core-and-edit-entry": [
+        "Alerts empty Browse Products CTA is canonical and routes to /browse"
+      ],
+      "edit-alert-states": [
+        "Ignore marketplace, Alert Type, Price Drop, Notify Me dropdowns"
+      ],
+      "alerts-delete-and-bulk-actions": [
+        "Ignore Today/timestamps in Alerts; history belongs to Recent"
+      ],
+      "recent-and-push-notification": [
+        "Replace Best Buy/Walmart examples with Target"
+      ],
+      "account-auth-and-shared-states": [
+        "Ignore profile/avatar and Forgot password"
+      ]
+    }
+  }
+}
