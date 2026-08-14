@@ -225,9 +225,11 @@ describe("M0 PostgreSQL foundation", () => {
         rolsuper: boolean;
         rolcreatedb: boolean;
         rolcreaterole: boolean;
+        rolconnlimit: number;
         rolinherit: boolean;
         rolreplication: boolean;
         rolbypassrls: boolean;
+        password_never_expires: boolean;
       }[]
     >`
       SELECT
@@ -235,9 +237,12 @@ describe("M0 PostgreSQL foundation", () => {
         rolsuper,
         rolcreatedb,
         rolcreaterole,
+        rolconnlimit,
         rolinherit,
         rolreplication,
-        rolbypassrls
+        rolbypassrls,
+        rolvaliduntil IS null
+          OR rolvaliduntil = 'infinity'::timestamptz AS password_never_expires
         FROM pg_roles
        WHERE rolname = ANY(${migrator.array([
          "notify_migrator",
@@ -252,27 +257,33 @@ describe("M0 PostgreSQL foundation", () => {
         rolsuper: false,
         rolcreatedb: false,
         rolcreaterole: false,
+        rolconnlimit: -1,
         rolinherit: false,
         rolreplication: false,
         rolbypassrls: false,
+        password_never_expires: true,
       },
       {
         rolname: "notify_migrator",
         rolsuper: false,
         rolcreatedb: false,
         rolcreaterole: false,
+        rolconnlimit: -1,
         rolinherit: false,
         rolreplication: false,
         rolbypassrls: false,
+        password_never_expires: true,
       },
       {
         rolname: "notify_monitor",
         rolsuper: false,
         rolcreatedb: false,
         rolcreaterole: false,
+        rolconnlimit: -1,
         rolinherit: false,
         rolreplication: false,
         rolbypassrls: false,
+        password_never_expires: true,
       },
     ]);
 
@@ -290,6 +301,11 @@ describe("M0 PostgreSQL foundation", () => {
         "notify_api",
         "notify_monitor",
       ])})
+         OR granted_role.rolname = ANY(${migrator.array([
+           "notify_migrator",
+           "notify_api",
+           "notify_monitor",
+         ])})
       ORDER BY member_role, granted_role
     `;
     expect(memberships).toEqual([]);
@@ -309,10 +325,25 @@ describe("M0 PostgreSQL foundation", () => {
     ]);
 
     const databasePrivileges = await migrator<
-      { api_can_temp: boolean; monitor_can_temp: boolean }[]
+      {
+        api_can_create: boolean;
+        api_can_temp: boolean;
+        monitor_can_create: boolean;
+        monitor_can_temp: boolean;
+      }[]
     >`
       SELECT
+        has_database_privilege(
+          'notify_api',
+          current_database(),
+          'CREATE'
+        ) AS api_can_create,
         has_database_privilege('notify_api', current_database(), 'TEMP') AS api_can_temp,
+        has_database_privilege(
+          'notify_monitor',
+          current_database(),
+          'CREATE'
+        ) AS monitor_can_create,
         has_database_privilege(
           'notify_monitor',
           current_database(),
@@ -320,7 +351,12 @@ describe("M0 PostgreSQL foundation", () => {
         ) AS monitor_can_temp
     `;
     expect(databasePrivileges).toEqual([
-      { api_can_temp: false, monitor_can_temp: false },
+      {
+        api_can_create: false,
+        api_can_temp: false,
+        monitor_can_create: false,
+        monitor_can_temp: false,
+      },
     ]);
 
     const unexpectedTableOwners = await migrator<
@@ -342,24 +378,65 @@ describe("M0 PostgreSQL foundation", () => {
         await connection.unsafe(`
           CREATE ROLE m0_bootstrap_membership_probe NOLOGIN BYPASSRLS;
           CREATE ROLE m0_bootstrap_membership_grantor NOLOGIN CREATEROLE;
-          ALTER ROLE notify_migrator BYPASSRLS REPLICATION;
-          ALTER ROLE notify_api BYPASSRLS REPLICATION;
-          ALTER ROLE notify_monitor BYPASSRLS REPLICATION;
-          GRANT TEMPORARY ON DATABASE notify TO notify_api, notify_monitor;
+          CREATE ROLE m0_bootstrap_membership_downstream NOLOGIN;
+          CREATE ROLE m0_bootstrap_runtime_delegatee NOLOGIN;
+          CREATE ROLE m0_bootstrap_database_grantor NOLOGIN;
+          CREATE ROLE m0_bootstrap_function_grantor NOLOGIN;
+          ALTER ROLE notify_migrator BYPASSRLS REPLICATION
+            CONNECTION LIMIT 0 VALID UNTIL '2000-01-01 00:00:00+00';
+          ALTER ROLE notify_api BYPASSRLS REPLICATION CREATEROLE
+            CONNECTION LIMIT 0 VALID UNTIL '2000-01-01 00:00:00+00';
+          ALTER ROLE notify_monitor BYPASSRLS REPLICATION
+            CONNECTION LIMIT 1 VALID UNTIL '2000-01-01 00:00:00+00';
+          GRANT CREATE, TEMPORARY ON DATABASE notify
+            TO m0_bootstrap_database_grantor WITH GRANT OPTION;
+          SET ROLE m0_bootstrap_database_grantor;
+          GRANT CREATE, TEMPORARY ON DATABASE notify
+            TO PUBLIC, notify_api, notify_monitor;
+          RESET ROLE;
           GRANT m0_bootstrap_membership_probe
             TO m0_bootstrap_membership_grantor WITH ADMIN OPTION;
           SET ROLE m0_bootstrap_membership_grantor;
           GRANT m0_bootstrap_membership_probe
-            TO notify_migrator, notify_api, notify_monitor;
+            TO notify_migrator, notify_monitor;
+          GRANT m0_bootstrap_membership_probe
+            TO notify_api WITH ADMIN OPTION;
           RESET ROLE;
+          SET ROLE notify_api;
+          GRANT m0_bootstrap_membership_probe
+            TO m0_bootstrap_membership_downstream;
+          RESET ROLE;
+          GRANT notify_migrator, notify_api, notify_monitor
+            TO m0_bootstrap_runtime_delegatee;
+          GRANT USAGE ON SCHEMA public TO m0_bootstrap_function_grantor;
+          GRANT EXECUTE ON FUNCTION public.digest(bytea, text)
+            TO m0_bootstrap_function_grantor WITH GRANT OPTION;
+          SET ROLE m0_bootstrap_function_grantor;
+          GRANT EXECUTE ON FUNCTION public.digest(bytea, text)
+            TO PUBLIC, notify_api, notify_monitor;
+          RESET ROLE;
+          REVOKE USAGE ON SCHEMA public FROM m0_bootstrap_function_grantor;
         `);
 
         await connection.file(BOOTSTRAP_SQL_PATH, { cache: false });
 
         const roles = await connection<
-          { rolbypassrls: boolean; rolname: string; rolreplication: boolean }[]
+          {
+            password_never_expires: boolean;
+            rolbypassrls: boolean;
+            rolconnlimit: number;
+            rolcreaterole: boolean;
+            rolname: string;
+            rolreplication: boolean;
+          }[]
         >`
-          SELECT rolname, rolreplication, rolbypassrls
+          SELECT
+            rolname,
+            rolcreaterole,
+            rolreplication,
+            rolbypassrls,
+            rolconnlimit,
+            rolvaliduntil = 'infinity'::timestamptz AS password_never_expires
             FROM pg_roles
            WHERE rolname = ANY(${connection.array([
              "notify_migrator",
@@ -369,49 +446,135 @@ describe("M0 PostgreSQL foundation", () => {
            ORDER BY rolname
         `;
         expect(roles).toEqual([
-          { rolname: "notify_api", rolreplication: false, rolbypassrls: false },
           {
-            rolname: "notify_migrator",
-            rolreplication: false,
+            password_never_expires: true,
             rolbypassrls: false,
+            rolconnlimit: -1,
+            rolcreaterole: false,
+            rolname: "notify_api",
+            rolreplication: false,
           },
           {
+            password_never_expires: true,
+            rolbypassrls: false,
+            rolconnlimit: -1,
+            rolcreaterole: false,
+            rolname: "notify_migrator",
+            rolreplication: false,
+          },
+          {
+            password_never_expires: true,
+            rolbypassrls: false,
+            rolconnlimit: -1,
+            rolcreaterole: false,
             rolname: "notify_monitor",
             rolreplication: false,
-            rolbypassrls: false,
           },
         ]);
 
         const databasePrivileges = await connection<
-          { api_can_temp: boolean; monitor_can_temp: boolean }[]
+          {
+            api_can_create: boolean;
+            api_can_temp: boolean;
+            monitor_can_create: boolean;
+            monitor_can_temp: boolean;
+            public_privilege_count: number;
+          }[]
         >`
           SELECT
+            has_database_privilege(
+              'notify_api',
+              'notify',
+              'CREATE'
+            ) AS api_can_create,
             has_database_privilege('notify_api', 'notify', 'TEMP') AS api_can_temp,
             has_database_privilege(
               'notify_monitor',
               'notify',
+              'CREATE'
+            ) AS monitor_can_create,
+            has_database_privilege(
+              'notify_monitor',
+              'notify',
               'TEMP'
-            ) AS monitor_can_temp
+            ) AS monitor_can_temp,
+            (
+              SELECT count(*)::int
+                FROM pg_database AS database
+                CROSS JOIN LATERAL aclexplode(database.datacl) AS privilege
+               WHERE database.datname = 'notify'
+                 AND privilege.grantee = 0
+            ) AS public_privilege_count
         `;
         expect(databasePrivileges).toEqual([
-          { api_can_temp: false, monitor_can_temp: false },
+          {
+            api_can_create: false,
+            api_can_temp: false,
+            monitor_can_create: false,
+            monitor_can_temp: false,
+            public_privilege_count: 0,
+          },
         ]);
 
-        const memberships = await connection<{ member_role: string }[]>`
-          SELECT member_role.rolname AS member_role
+        const memberships = await connection<
+          { granted_role: string; member_role: string }[]
+        >`
+          SELECT
+            granted_role.rolname AS granted_role,
+            member_role.rolname AS member_role
             FROM pg_auth_members AS membership
             JOIN pg_roles AS granted_role
               ON granted_role.oid = membership.roleid
             JOIN pg_roles AS member_role ON member_role.oid = membership.member
-           WHERE granted_role.rolname = 'm0_bootstrap_membership_probe'
-             AND member_role.rolname = ANY(${connection.array([
-               "notify_migrator",
-               "notify_api",
-               "notify_monitor",
-             ])})
-           ORDER BY member_role
+           WHERE granted_role.rolname = ANY(${connection.array([
+                   "notify_migrator",
+                   "notify_api",
+                   "notify_monitor",
+                 ])})
+              OR member_role.rolname = ANY(${connection.array([
+                   "notify_migrator",
+                   "notify_api",
+                   "notify_monitor",
+                 ])})
+              OR (
+                granted_role.rolname = 'm0_bootstrap_membership_probe'
+                AND member_role.rolname = 'm0_bootstrap_membership_downstream'
+              )
+           ORDER BY granted_role, member_role
         `;
         expect(memberships).toEqual([]);
+
+        const extensionPrivileges = await connection<
+          {
+            api_can_digest: boolean;
+            monitor_can_digest: boolean;
+            public_can_digest: boolean;
+          }[]
+        >`
+          SELECT
+            has_function_privilege(
+              'notify_api',
+              'public.digest(bytea,text)',
+              'EXECUTE'
+            ) AS api_can_digest,
+            has_function_privilege(
+              'notify_monitor',
+              'public.digest(bytea,text)',
+              'EXECUTE'
+            ) AS monitor_can_digest,
+            has_function_privilege(
+              'public',
+              'public.digest(bytea,text)',
+              'EXECUTE'
+            ) AS public_can_digest
+        `;
+        expect(extensionPrivileges).toEqual([
+          {
+            api_can_digest: false,
+            monitor_can_digest: false,
+            public_can_digest: false,
+          },
+        ]);
       } finally {
         await connection.unsafe("ROLLBACK");
       }
