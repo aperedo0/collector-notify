@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786657103236,
+      "tag": "0000_reflective_praxagora",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786670942968,
+      "tag": "0001_m0_foundation_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786671429643,
+      "tag": "0002_public_schema_owner",
+      "breakpoints": true
+    }
+  ]
+}

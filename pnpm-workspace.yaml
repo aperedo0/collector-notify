@@ -1,0 +1,15 @@
+packages:
+  - apps/*
+  - packages/*
+
+autoInstallPeers: false
+linkWorkspacePackages: true
+saveExact: true
+strictPeerDependencies: false
+
+overrides:
+  "@esbuild-kit/core-utils>esbuild": 0.25.12
+  lodash: 4.18.1
+
+allowBuilds:
+  esbuild: true

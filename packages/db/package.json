@@ -1,0 +1,27 @@
+{
+  "name": "@notify/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "scripts": {
+    "lint": "eslint src tests scripts drizzle.config.ts --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "node src/migrate.ts",
+    "db:seed": "node src/seed.ts",
+    "db:reset": "node src/reset.ts",
+    "db:check": "node src/check.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "postgres": "3.4.9"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10"
+  }
+}

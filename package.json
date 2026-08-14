@@ -1,0 +1,31 @@
+{
+  "name": "notify",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24.0.0 <25.0.0",
+    "pnpm": ">=11.0.0 <12.0.0"
+  },
+  "scripts": {
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "pnpm --filter @notify/db db:migrate",
+    "db:seed": "pnpm --filter @notify/db db:seed",
+    "db:reset": "pnpm --filter @notify/db db:reset",
+    "db:check": "pnpm --filter @notify/db db:check",
+    "auth:schema": "node packages/db/scripts/generate-auth-schema.mjs",
+    "auth:schema:check": "node packages/db/scripts/generate-auth-schema.mjs --check"
+  },
+  "devDependencies": {
+    "auth": "1.6.27",
+    "eslint": "10.8.1",
+    "turbo": "2.10.9",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.10"
+  }
+}

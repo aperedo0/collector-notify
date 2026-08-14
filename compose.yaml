@@ -1,0 +1,24 @@
+name: notify
+
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    environment:
+      POSTGRES_DB: notify
+      POSTGRES_USER: notify_bootstrap
+      POSTGRES_PASSWORD: notify_local_bootstrap
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - notify_postgres_data:/var/lib/postgresql/data
+      - ./packages/db/docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notify_bootstrap -d notify"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  notify_postgres_data:

@@ -512,6 +512,8 @@ RLS is intentionally not enabled because desktop and mobile have no PostgreSQL c
 
 Before object grants, revoke `CREATE` on schema `public` and all default table, sequence, and function privileges from PostgreSQL's `PUBLIC` role. Set `notify_migrator` default privileges so newly migrated objects are not automatically exposed. Runtime roles receive explicit grants only; neither gets ownership, schema creation, role management, or bypass privileges.
 
+`pgcrypto` is a trusted extension, so PostgreSQL initially owns its contained functions with the environment's bootstrap superuser rather than the role that installs it. Environment provisioning therefore installs `pgcrypto` as `notify_migrator`, transfers only its member functions to that non-runtime migration role, revokes `PUBLIC` execution from every extension function, and grants `EXECUTE` on only `public.gen_random_uuid()` to `notify_migrator`, `notify_api`, and `notify_monitor`. The initial migration retains `CREATE EXTENSION IF NOT EXISTS pgcrypto` as the ledger declaration and fails closed if provisioning left any pgcrypto function executable by `PUBLIC` or omitted the required UUID grants. Local `db:reset` preserves this provisioned extension while rebuilding the application schema.
+
 ```text
 notify_migrator
   owns the schema and applies migrations; never loaded by a runtime process
@@ -523,7 +525,8 @@ notify_api
   SELECT on recent_events
   SELECT/INSERT/UPDATE/DELETE on push_tokens
   SELECT on user_preferences; UPDATE only notifications_enabled
-  INSERT/UPDATE/DELETE on realtime_tickets
+  SELECT only ticket_hash, user_id, expires_at, consumed_at plus
+    INSERT/UPDATE/DELETE on realtime_tickets
   application code supplies the mandatory user scope for every line above
   NO access to alert trigger state, fake offers, proxy tables, offer observations,
     monitor state, maintenance state, or the delivery outbox
@@ -535,7 +538,8 @@ notify_monitor
   SELECT/DELETE on push_tokens
   CRUD on alert_trigger_state, monitor state, offer_observations, fake_offers,
     notification_deliveries, proxy tables, and maintenance_job_state
-  DELETE on expired/consumed realtime_tickets for scheduled maintenance
+  SELECT only expires_at and consumed_at plus DELETE on expired/consumed
+    realtime_tickets for scheduled maintenance
   INSERT on recent_events only through fire_alert
   EXECUTE fire_alert
   NO access to Better Auth sessions, accounts, verification data, or passwords
@@ -1120,9 +1124,9 @@ Next milestone:     M<N+1> NOT STARTED
 ### M0. Repo + PostgreSQL foundation (1 to 2 days)
 Before scaffolding, check the current official documentation for Node 24 LTS, Expo SDK 57/React requirements, PostgreSQL 17 support, Neon compatibility/pooling, Drizzle migrations, and Better Auth's Drizzle schema/UUID configuration. STOP and report only if a pinned combination is no longer supported. Scaffold the pnpm/Turborepo root, `compose.yaml` with PostgreSQL 17, `packages/db`, and the minimum `apps/api/src/auth.ts` configuration needed for Better Auth schema generation. Pin exact dependency versions; do not use `@latest` in committed scripts.
 
-Approved M0 dependencies: `drizzle-orm`, `drizzle-kit`, `postgres`, `better-auth`, `@better-auth/drizzle-adapter`, `@better-auth/electron`, `@better-auth/expo`, `zod`, `vitest`, `eslint`, `typescript-eslint`, TypeScript, pnpm, and Turborepo. Docker Compose is local infrastructure, not an application dependency.
+Approved M0 dependencies: `drizzle-orm`, `drizzle-kit`, `postgres`, `better-auth`, the pinned `auth` schema CLI, `@better-auth/drizzle-adapter`, `@better-auth/electron`, `@better-auth/expo`, `zod`, `vitest`, `eslint`, `typescript-eslint`, TypeScript, pnpm, and Turborepo. Docker Compose is local infrastructure, not an application dependency.
 
-Create all Better Auth and domain tables, indexes, constraints, functions, triggers, grants, and seeds from Section 6 in the single Drizzle migration ledger. Environment role creation is an idempotent bootstrap step before migrations: Docker initialization creates local roles, while hosted roles are provisioned at M8 without embedding passwords in migrations. Use Docker health checks and root scripts `db:up`, `db:down`, `db:migrate`, `db:seed`, and `db:reset`; `db:reset` is local/test-only and must reject a non-local database host. No hosted Neon project is required to complete M0.
+Create all Better Auth and domain tables, indexes, constraints, functions, triggers, grants, and seeds from Section 6 in the single Drizzle migration ledger. Environment role and pgcrypto provisioning is an idempotent bootstrap step before migrations: Docker initialization creates local roles and hardens the extension privileges from Section 6.3, while the equivalent hosted provisioning occurs at M8 without embedding passwords in migrations. Use Docker health checks and root scripts `db:up`, `db:down`, `db:migrate`, `db:seed`, and `db:reset`; `db:reset` is local/test-only and must reject a non-local database host. No hosted Neon project is required to complete M0.
 
 Done when: a clean `pnpm db:up && pnpm db:reset` applies every migration and seed; a second migration run is a no-op; all expected tables/functions/triggers exist; Better Auth schema generation matches the checked-in Drizzle schema; the database-role subset of 13.5 passes; seed products are visible through a server-only query; `pnpm lint`, `pnpm typecheck`, and `pnpm test` pass. Then STOP.
 
