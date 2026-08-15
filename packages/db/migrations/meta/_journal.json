@@ -22,6 +22,13 @@
       "when": 1786671429643,
       "tag": "0002_public_schema_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786832468086,
+      "tag": "0003_m0_fire_alert_null_guard",
+      "breakpoints": true
     }
   ]
 }

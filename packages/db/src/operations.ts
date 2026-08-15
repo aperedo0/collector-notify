@@ -3,7 +3,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import postgres, { type Sql } from "postgres";
 
-import { migrationDatabaseUrl, runtimeProcess } from "./environment.ts";
+import { migrationDatabaseUrl } from "./environment.ts";
 import {
   type AppliedMigrationRecord,
   assertMigrationLedgerIntegrity,
@@ -29,7 +29,12 @@ async function readAppliedMigrations(client: Sql): Promise<AppliedMigrationRecor
 }
 
 export async function migrateDatabase(): Promise<void> {
-  const migrationsFolder = `${runtimeProcess.cwd()}/migrations`;
+  // Resolved from this file's own location, not process.cwd(), so
+  // `node packages/db/src/migrate.ts` works from any working directory,
+  // including the repository root. `import.meta.dirname` resolves to
+  // `packages/db/src`, hence the `..` segment back up to the package root.
+  const packageDirectory = `${(import.meta as unknown as { dirname: string }).dirname}/..`;
+  const migrationsFolder = `${packageDirectory}/migrations`;
   const migrationConfig = {
     migrationsFolder,
     migrationsSchema,

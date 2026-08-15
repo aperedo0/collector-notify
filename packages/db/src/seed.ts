@@ -1,5 +1,11 @@
-import { runtimeProcess } from "./environment.ts";
-import { seedDatabase } from "./seed-operations.ts";
+import {
+  describeDatabaseTarget,
+  migrationDatabaseUrl,
+  runtimeProcess,
+} from "./environment.ts";
+import { verifySeedDatabase } from "./seed-operations.ts";
 
-await seedDatabase();
-runtimeProcess.stdout.write("Database seed is up to date.\n");
+await verifySeedDatabase();
+runtimeProcess.stdout.write(
+  `Database seed is up to date. (${describeDatabaseTarget(migrationDatabaseUrl())})\n`,
+);

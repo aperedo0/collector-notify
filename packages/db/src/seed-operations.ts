@@ -50,7 +50,7 @@ export async function verifySeedDatabase(): Promise<void> {
       );
     }
 
-    for (const [index, expected] of SEED_PRODUCTS.entries()) {
+    for (const expected of SEED_PRODUCTS) {
       const actual = seededProducts.find((product) => product.slug === expected.slug);
       const isSuggested = expected.suggestedRank !== null;
       const expectedRow = {
@@ -59,7 +59,7 @@ export async function verifySeedDatabase(): Promise<void> {
         imageUrl: null,
         productUrl: `https://www.target.com/p/notify-placeholder-${expected.slug}`,
         retailer: "target",
-        retailerProductId: `notify-placeholder-${String(index + 1).padStart(2, "0")}`,
+        retailerProductId: expected.retailerProductId,
         defaultAlertPriceCents: expected.defaultAlertPriceCents,
         isActive: true,
         isSuggested,

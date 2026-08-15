@@ -101,6 +101,19 @@ async function expectPermissionDenied(operation: () => Promise<unknown>): Promis
   }
 }
 
+async function expectFireAlertNullGuard(operation: () => Promise<unknown>): Promise<void> {
+  try {
+    await operation();
+    throw new Error("Expected fire_alert to raise on the null argument.");
+  } catch (error: unknown) {
+    // PostgreSQL reports a plpgsql RAISE EXCEPTION as SQLSTATE P0001.
+    expect(error).toMatchObject({
+      code: "P0001",
+      message: "fire_alert requires non-null arguments",
+    });
+  }
+}
+
 function firstRow<T>(rows: T[]): T {
   const row = rows[0];
   if (row === undefined) {
@@ -929,7 +942,7 @@ describe("M0 PostgreSQL foundation", () => {
       migrationsTable: "__drizzle_migrations",
     });
     assertMigrationLedgerIntegrity(checkedInMigrations, migrationRows);
-    expect(migrationRows).toHaveLength(3);
+    expect(migrationRows).toHaveLength(4);
 
     const products = await migrator<
       {
@@ -1069,6 +1082,49 @@ describe("M0 PostgreSQL foundation", () => {
     );
     await expectPermissionDenied(
       async () => monitor`SELECT ticket_hash FROM realtime_tickets WHERE false`,
+    );
+  });
+
+  it("raises instead of firing when any fire_alert argument is null", async () => {
+    // D32: a null price or cooldown makes its comparison null, which reads as false, so
+    // an alert that should have been throttled fires or one that should fire never does.
+    // notify_monitor is the only role holding EXECUTE, so calling through `api` here
+    // would fail with 42501 before the guard ever ran.
+    await expectFireAlertNullGuard(
+      async () => monitor`SELECT public.fire_alert(null::uuid, 'm0', 100, 30)`,
+    );
+    await expectFireAlertNullGuard(
+      async () =>
+        monitor`
+          SELECT public.fire_alert(
+            '00000000-0000-0000-0000-000000000000',
+            null::text,
+            100,
+            30
+          )
+        `,
+    );
+    await expectFireAlertNullGuard(
+      async () =>
+        monitor`
+          SELECT public.fire_alert(
+            '00000000-0000-0000-0000-000000000000',
+            'm0',
+            null::int,
+            30
+          )
+        `,
+    );
+    await expectFireAlertNullGuard(
+      async () =>
+        monitor`
+          SELECT public.fire_alert(
+            '00000000-0000-0000-0000-000000000000',
+            'm0',
+            100,
+            null::int
+          )
+        `,
     );
   });
 

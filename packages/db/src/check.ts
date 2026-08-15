@@ -1,6 +1,10 @@
 import postgres from "postgres";
 
-import { migrationDatabaseUrl, runtimeProcess } from "./environment.ts";
+import {
+  describeDatabaseTarget,
+  migrationDatabaseUrl,
+  runtimeProcess,
+} from "./environment.ts";
 import { verifySeedDatabase } from "./seed-operations.ts";
 
 const expectedTables = [
@@ -26,7 +30,8 @@ const expectedTables = [
   "verifications",
 ] as const;
 
-const client = postgres(migrationDatabaseUrl(), {
+const databaseUrl = migrationDatabaseUrl();
+const client = postgres(databaseUrl, {
   max: 1,
   onnotice: () => undefined,
 });
@@ -48,7 +53,7 @@ try {
   await verifySeedDatabase();
 
   runtimeProcess.stdout.write(
-    `Verified ${String(expectedTables.length)} domain/auth tables and the server-only seed catalog.\n`,
+    `Verified ${String(expectedTables.length)} domain/auth tables and the server-only seed catalog. (${describeDatabaseTarget(databaseUrl)})\n`,
   );
 } finally {
   await client.end();

@@ -3,6 +3,7 @@ import postgres from "postgres";
 import { MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL } from "./default-privileges.ts";
 import {
   assertLocalResetUrl,
+  describeDatabaseTarget,
   migrationDatabaseUrl,
   runtimeProcess,
 } from "./environment.ts";
@@ -35,4 +36,6 @@ try {
 }
 
 await seedDatabase();
-runtimeProcess.stdout.write("Local Notify database reset, migrated, and seeded.\n");
+runtimeProcess.stdout.write(
+  `Local Notify database reset, migrated, and seeded. (${describeDatabaseTarget(databaseUrl)})\n`,
+);
