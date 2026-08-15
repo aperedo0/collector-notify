@@ -252,7 +252,7 @@ Skills name these by role or purpose; this table is the only place the paths liv
 | What a skill calls it | Path in this repository |
 |---|---|
 | the plan directory | `.agents/plans/` — gitignored; plans are local working artifacts, never committed |
-| the refactor-log directory | `.agents/refactor-logs/` |
+| the refactor-log directory | `.agents/refactor-logs/` — gitignored; step logs are local working artifacts, never committed |
 | the `wave-implementer` role definition | `.claude/agents/wave-implementer.md` |
 | the `wave-reviewer` role definition | `.claude/agents/wave-reviewer.md` |
 | the `health-reviewer` criteria file | `.claude/agents/health-reviewer.md` |
