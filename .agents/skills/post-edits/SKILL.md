@@ -1,9 +1,12 @@
 ---
 name: post-edits
 description: Review and automatically fix bugs in uncommitted work after finishing a round of edits. Use when the user asks for post edits, to review or QA what was just built, to find bugs in recent uncommitted work, or to deep-audit a diff, branch, or PR. Snapshots the worktree before editing, confirms findings, fixes every confirmed issue, then runs all documented builds and tests. Do not use for new implementation work, or for visual mock-comparison checks — those get an inline screenshot comparison instead.
+allowed-tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
 # Post Edits — autonomous review-and-fix loop
+
+**Requires:** the `health-reviewer` and `bug-confirmer` criteria files.
 
 Read the repository's agent instructions (`AGENTS.md` / `CLAUDE.md`) first. Run
 the review and confirmation inline, sequentially, without subagents. After one
@@ -26,7 +29,9 @@ This skill's home ground is uncommitted work. Choose the target in this order:
 Ask once only if no trustworthy base can be derived. Record the exact range and
 file list. Stop if the target contains no files.
 
-Read the Health-Check Scopes table in the repository's agent instructions. For a
+Read the Health-Check Scopes table in the repository's agent instructions; when
+the repository defines none, treat every changed file as one general
+correctness scope. For a
 post-edits review, run the matching scopes; a target file matching no scope still
 gets a general correctness review — scopes add focus, they never remove files
 from the target. For a deep, branch, PR, or full-diff audit, run every scope
@@ -34,14 +39,14 @@ against the requested target.
 
 ## 2. Health check
 
-Read `.claude/agents/health-reviewer.md` once. Review each applicable scope and
+Read the `health-reviewer` criteria file that `AGENTS.md` names, once. Review each applicable scope and
 file in the main context. Show concise evidence and conclusions, not private
 chain-of-thought. Publish one compact list with stable IDs, severity, scope,
 file:line, trigger, and user impact. If there are no findings, go to Verify.
 
 ## 3. Confirm
 
-Read `.claude/agents/bug-confirmer.md`. Re-read every citation, trace control and
+Read the `bug-confirmer` criteria file that `AGENTS.md` names. Re-read every citation, trace control and
 data flow, and verify that the change caused or exposed the issue. Publish the
 verdict, confidence, and decisive evidence for each ID.
 

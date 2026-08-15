@@ -245,6 +245,21 @@ Every entry below names its fallback path for agents without a skill loader. Can
 
 `animations` supplies the motion spec in addition to whatever workflow the ladder picked; a motion change is not a presentation-only restyle, because it changes behavior over time.
 
+### Workflow file locations
+
+Skills name these by role or purpose; this table is the only place the paths live.
+
+| What a skill calls it | Path in this repository |
+|---|---|
+| the plan directory | `.claude/plans/` |
+| the refactor-log directory | `.claude/refactor-logs/` |
+| the `wave-implementer` role definition | `.claude/agents/wave-implementer.md` |
+| the `wave-reviewer` role definition | `.claude/agents/wave-reviewer.md` |
+| the `health-reviewer` criteria file | `.claude/agents/health-reviewer.md` |
+| the `bug-confirmer` criteria file | `.claude/agents/bug-confirmer.md` |
+
+Claude Code registers the four role files as dispatchable agent types automatically. Codex loads the same files as plain briefs for its generic agent-spawn tool.
+
 ### Trivial self-service edits
 
 Before routing an implementation request to `wave-manager`, check whether it asks for exactly one unambiguous literal replacement in one existing file. The intended effect must be obvious and isolated, with no dependent edit or design decision. Never classify a change as trivial self-service if it touches any protected area. If it qualifies, inspect the repository only to locate the exact edit; do not modify files, create a plan, invoke another workflow, spawn an agent, build, or test. Reply in at most two sentences: identify the file and the exact old and new expressions, then optionally name one quick manual check. If the user explicitly follows up asking the agent to perform the edit anyway, route that follow-up through `wave-manager`.

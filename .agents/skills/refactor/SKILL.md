@@ -1,9 +1,11 @@
 ---
 name: refactor
-description: Execute exactly one bounded refactor target from BACKLOG.md's ranked queue — behavior-preserving, stepwise with tests after every step, run by one fresh implementer subagent and audited by a fresh reviewer, everything left uncommitted for the user. Use when asked to refactor a queue target, run the next refactor, or work through the backlog. Never for new features, bug fixes, or rewrites; a refactor request not tied to a queue target routes through the repository routing ladder instead.
+description: Execute exactly one bounded refactor target from BACKLOG.md's ranked queue — behavior-preserving, stepwise with tests after every step, run by one fresh implementer subagent and audited by a fresh reviewer, everything left uncommitted for the user. Use when asked to refactor a queue target, run the next refactor, or work through the backlog. Never for new features, bug fixes, or rewrites; a refactor request not tied to a queue target routes through the repository routing ladder, or through the repository's normal implementation workflow when it defines no ladder.
 ---
 
 # Refactor
+
+**Requires:** the `behavior-map` skill's three ledgers (`BEHAVIOR_MAP.md`, `SUSPECTED_BUGS.md`, `BACKLOG.md`), and the `wave-implementer` and `wave-reviewer` role definitions.
 
 The session manages and never writes production code; one fresh implementer
 subagent executes the whole run; one fresh reviewer audits it. Read the
@@ -22,7 +24,7 @@ Record `git status --porcelain` as the baseline (it must be empty), then dispatc
 
 ## Dispatch — one implementer, whole run
 
-Spawn ONE fresh `wave-implementer` (definition: `.claude/agents/wave-implementer.md`) whose spec is: the target entry verbatim from `BACKLOG.md`; the paths of `BEHAVIOR_MAP.md`, `SUSPECTED_BUGS.md`, and its step log `.claude/refactor-logs/<YYYY-MM-DD>-<target-slug>.md`; and the run rules below, passed in full.
+Spawn ONE fresh `wave-implementer` (the role definition `AGENTS.md` names) whose spec is: the target entry verbatim from `BACKLOG.md`; the paths of `BEHAVIOR_MAP.md`, `SUSPECTED_BUGS.md`, and its step log at `<refactor-log-directory>/<YYYY-MM-DD>-<target-slug>.md`, using the directory `AGENTS.md` names; and the run rules below, passed in full.
 
 **Run rules for the implementer:**
 
@@ -43,8 +45,8 @@ Spawn ONE fresh `wave-implementer` (definition: `.claude/agents/wave-implementer
 
 Verify the implementer's report first: proof lines present, and `git status
 --porcelain` versus the baseline shows only the target cluster, tests, the
-step log, and `BACKLOG.md`. Then spawn a fresh `wave-reviewer` (definition:
-`.claude/agents/wave-reviewer.md`) with the target entry, the three ledger
+step log, and `BACKLOG.md`. Then spawn a fresh `wave-reviewer` (the role
+definition `AGENTS.md` names) with the target entry, the three ledger
 paths, the step log, the file list, and the proof lines. Its lens, in order:
 
 1. Behavior identical — against `BEHAVIOR_MAP.md`'s entries, with every `SUSPECTED_BUGS.md` divergence still present.

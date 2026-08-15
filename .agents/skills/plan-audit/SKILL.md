@@ -5,26 +5,31 @@ description: The standalone pipeline stage between planning and implementation �
 
 # Plan Audit
 
+**Requires:** an approved plan, and an agent runtime that can dispatch fresh read-only subagents.
+
 The stage between planning and implementation:
 plan → **improve → verify** → wave-based implementation.
 
 **Agent assignment:** plan authorship and round adjudication stay with the
 session. Every dispatched critic and reviewer runs as a fresh, read-only
 agent at the repository's implementation tier — see the agent-tier note in
-the repository's agent instructions. Deviate only on an explicit user order
+the repository's agent instructions; when it defines none, use the strongest
+model available to the session. Deviate only on an explicit user order
 for a specific round.
 
 ## Step 0 — put the plan on disk
 
 Reviewers cannot see the conversation. If the approved plan is not yet a
-file, write it verbatim to `.claude/plans/<YYYY-MM-DD>-<task-slug>.md`.
+file, write it verbatim to `<plan-directory>/<YYYY-MM-DD>-<task-slug>.md`,
+using the plan directory `AGENTS.md` names.
 That file is the audit's subject, the only file this skill ever edits, and
 the artifact the implementation workflow consumes. Production code, tests,
 migrations, and project files are untouchable here.
 
 ## Audit sizing
 
-The routing ladder in the repository agent instructions sizes the audit. A
+The routing ladder in the repository agent instructions sizes the audit; when
+the repository defines no ladder, run the full pipeline. A
 **Normal — Full** plan runs Phase A and Phase B below unchanged. A
 **Normal — Standard** plan (single wave, confined to the lane the ladder
 defines, no protected areas) runs the **light audit** instead of both

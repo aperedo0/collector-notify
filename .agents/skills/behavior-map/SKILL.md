@@ -5,6 +5,8 @@ description: Read the codebase and maintain the three refactor-support ledgers �
 
 # Behavior Map
 
+**Requires:** nothing. It creates the three ledgers that `refactor` consumes.
+
 Read the repository agent instructions (`AGENTS.md` / `CLAUDE.md`) first.
 This skill writes exactly three files, one purpose each, plus a one-time
 `.gitignore` line — and touches nothing else.
@@ -45,7 +47,7 @@ Each target: `rank. <name> — <file cluster> — why now (churn <N>, blocks: <w
 
 - Rank by churn × how much the target blocks future work. Churn: `git log --since="3 months ago" --format= --name-only -- <source globs> | sort | uniq -c | sort -rn`.
 - One-run bound: the target must be completable to a green full gate in a single `/refactor` run. Split anything larger before it enters the queue.
-- Flag `[PROTECTED]` when the target touches a protected area (routing ladder in the repository agent instructions).
+- Flag `[PROTECTED]` when the target touches a protected area (routing ladder in the repository agent instructions; when the repository defines none, treat authentication and session handling, persistence and migrations, security and authorization, and build, signing, or release configuration as protected).
 
 ## Fold in a refactor run
 
