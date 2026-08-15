@@ -99,6 +99,9 @@ AGENT MAY NOT DECIDE
 | D29 | WebSocket authentication | A signed-in client requests a single-use `/v1/realtime-ticket` that expires after 60 seconds, then presents it during WebSocket establishment using the `Sec-WebSocket-Protocol` header. The API atomically consumes the ticket and binds the socket to that session's user. Long-lived session material never appears in a URL or log. | Electron and Expo get one consistent transport without depending on platform-specific WebSocket cookie behavior. |
 | D30 | Database roles | `notify_migrator` owns schema/migrations, `notify_api` serves customer and auth traffic, and `notify_monitor` runs polling, `fire_alert`, outbox, maintenance, and operator CLIs. `notify_api` and `notify_monitor` are not owners; only `notify_monitor` may execute `fire_alert`. | Least privilege limits the blast radius of either runtime service. |
 | D31 | API request security | Production API and WebSocket traffic is HTTPS/WSS only. CORS and Better Auth trusted origins are exact allowlists. Every state-changing `/v1` request requires JSON plus `X-Notify-Client: desktop` or `mobile`; unexpected browser origins are rejected before auth. Better Auth keeps its production rate limiter, and Fastify rate-limits auth-sensitive and mutation routes. | Cookie sessions require a deliberate cross-site request boundary even though V1 clients are native applications. |
+| D32 | `fire_alert` null arguments | `fire_alert` raises when any of `p_alert_id`, `p_trigger_key`, `p_price_cents`, or `p_cooldown_minutes` is null. All four are required; the function never treats a missing argument as a defaulted one. | A null cooldown makes the cooldown predicate evaluate to null, which reads as false, so a fire that should have been throttled proceeds — verified against a live alert correctly blocked at 30 minutes. A null price makes the threshold comparison null, so the alert silently never fires. Defaulting either one hides a caller bug; declaring the function `STRICT` would make a null argument indistinguishable from "not fireable", which is the worse failure for a product whose job is firing alerts. The monitor is the only grantee and arrives at M2, so a loud failure costs nothing. Section 14's scope table makes `packages/db/migrations/**` off-limits from M1.5 onward, so M0 is the only milestone that can add the guard. |
+| D33 | `@types/node` | Not added. `packages/db` and `apps/api` keep their hand-declared runtime shims, and code needing a module path uses a local cast rather than relying on ambient Node types. | The package buys three copies of a four-line type declaration and one path bug that already fails loudly. A cast-based helper compiles under the repository's `tsconfig.base.json` with no new dependency, keeping Section 14's approved M0 dependency list exactly as written. M8 revisits tooling and can reconsider it there with nothing lost in the meantime. |
+| D34 | Indexes for the 6.5 maintenance purges | Not added in V1. `recent_events.occurred_at`, `offer_observations.observed_at`, and `alerts.deleted_at` stay unindexed and the purges sequentially scan. Revisit when the catalog passes roughly 50 products or a purge exceeds one second. | Measured, not estimated: at the seeded cadence the 30-day `offer_observations` window holds 864,000 rows, and deleting the 288,095 expired ones takes 119 ms — once per day. An index would save a tenth of a second daily and charge a write against roughly 28,800 daily inserts. `alerts` and `recent_events` are smaller still. Because Section 14 also blocks migrations after M0, an unnecessary index would be equally stuck; skipping one that is later needed costs only a slow background job. |
 
 ## 2. What changed vs the original spec
 
@@ -444,6 +447,13 @@ create or replace function public.fire_alert(
 language plpgsql security definer set search_path = public as $fn$
 declare v_event_id uuid; v_user_id uuid; v_state alert_trigger_state%rowtype;
 begin
+  -- D32: every argument is required; a null silently corrupts the checks below
+  if p_alert_id is null or p_trigger_key is null
+     or p_price_cents is null or p_cooldown_minutes is null
+  then
+    raise exception 'fire_alert requires non-null arguments';
+  end if;
+
   select * into v_state from alert_trigger_state
    where alert_id = p_alert_id
    for update;
