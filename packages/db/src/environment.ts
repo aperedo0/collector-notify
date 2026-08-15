@@ -22,7 +22,7 @@ export function migrationDatabaseUrl(): string {
 
 export function assertLocalResetUrl(databaseUrl: string): void {
   const localDatabasePattern =
-    /^postgres(?:ql)?:\/\/[^/@]+(?::[^/@]*)?@(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/notify(?:\?.*)?$/;
+    /^postgres(?:ql)?:\/\/[^/@]+(?::[^/@]*)?@(?:127\.0\.0\.1|localhost)(?::\d+)?\/notify(?:\?.*)?$/;
 
   if (!localDatabasePattern.test(databaseUrl)) {
     throw new Error(

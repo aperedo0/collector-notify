@@ -1,0 +1,14 @@
+export const MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL = `
+ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+  REVOKE ALL ON TABLES FROM PUBLIC, notify_api, notify_monitor;
+ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+  REVOKE ALL ON SEQUENCES FROM PUBLIC, notify_api, notify_monitor;
+ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, notify_api, notify_monitor;
+ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+  REVOKE ALL ON TABLES FROM PUBLIC, notify_api, notify_monitor;
+ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+  REVOKE ALL ON SEQUENCES FROM PUBLIC, notify_api, notify_monitor;
+ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, notify_api, notify_monitor;
+`;

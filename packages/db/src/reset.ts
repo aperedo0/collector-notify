@@ -1,5 +1,6 @@
 import postgres from "postgres";
 
+import { MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL } from "./default-privileges.ts";
 import {
   assertLocalResetUrl,
   migrationDatabaseUrl,
@@ -17,6 +18,7 @@ const client = postgres(databaseUrl, {
 
 try {
   await client.begin(async (transaction) => {
+    await transaction.unsafe(MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL);
     await transaction.unsafe(
       "CREATE SCHEMA notify_reset_pgcrypto AUTHORIZATION notify_migrator",
     );

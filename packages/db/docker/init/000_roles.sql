@@ -119,6 +119,67 @@ revoke all on database notify from public;
 revoke all on database notify from notify_api, notify_monitor;
 grant connect on database notify to notify_api, notify_monitor;
 
+alter schema public owner to notify_migrator;
+
+do $schema_privileges$
+declare
+  schema_privilege text;
+  privilege_grantee name;
+  privilege_grantor name;
+  grantee_is_public boolean;
+begin
+  for schema_privilege, privilege_grantee, privilege_grantor, grantee_is_public in
+    select
+      privilege.privilege_type,
+      grantee.rolname,
+      grantor.rolname,
+      privilege.grantee = 0
+      from pg_namespace as namespace
+      cross join lateral aclexplode(
+        coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+      ) as privilege
+      join pg_roles as grantor on grantor.oid = privilege.grantor
+      left join pg_roles as grantee on grantee.oid = privilege.grantee
+     where namespace.nspname = 'public'
+       and (
+         privilege.grantee = 0
+         or grantee.rolname in ('notify_api', 'notify_monitor')
+       )
+  loop
+    execute format('set local role %I', privilege_grantor);
+    execute format(
+      'revoke %s on schema public from %s granted by %I cascade',
+      schema_privilege,
+      case
+        when grantee_is_public then 'public'
+        else format('%I', privilege_grantee)
+      end,
+      privilege_grantor
+    );
+    reset role;
+  end loop;
+end
+$schema_privileges$;
+
+set role notify_migrator;
+revoke all on schema public from public;
+revoke all on schema public from notify_api, notify_monitor;
+grant usage on schema public to notify_api, notify_monitor;
+reset role;
+
+alter default privileges for role notify_migrator
+  revoke all on tables from public, notify_api, notify_monitor;
+alter default privileges for role notify_migrator
+  revoke all on sequences from public, notify_api, notify_monitor;
+alter default privileges for role notify_migrator
+  revoke execute on functions from public, notify_api, notify_monitor;
+alter default privileges for role notify_migrator in schema public
+  revoke all on tables from public, notify_api, notify_monitor;
+alter default privileges for role notify_migrator in schema public
+  revoke all on sequences from public, notify_api, notify_monitor;
+alter default privileges for role notify_migrator in schema public
+  revoke execute on functions from public, notify_api, notify_monitor;
+
 set role notify_migrator;
 create extension if not exists pgcrypto with schema public;
 reset role;
@@ -198,7 +259,7 @@ begin
     end if;
     execute format('set local role %I', function_grantor);
     execute format(
-      'revoke execute on function %s from %s granted by %I cascade',
+      'revoke execute on routine %s from %s granted by %I cascade',
       granted_function,
       case
         when grantee_is_public then 'public'
@@ -217,6 +278,6 @@ begin
 end
 $function_privileges$;
 
-revoke execute on all functions in schema public from public;
+revoke execute on all routines in schema public from public;
 grant execute on function public.gen_random_uuid()
   to notify_migrator, notify_api, notify_monitor;

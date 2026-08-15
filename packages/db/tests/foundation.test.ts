@@ -7,6 +7,7 @@ import {
   assertLocalResetUrl,
   runtimeProcess,
 } from "../src/environment.ts";
+import { MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL } from "../src/default-privileges.ts";
 import { assertMigrationLedgerIntegrity } from "../src/migration-integrity.ts";
 import { SEED_PRODUCTS } from "../src/seed-data.ts";
 
@@ -382,6 +383,8 @@ describe("M0 PostgreSQL foundation", () => {
           CREATE ROLE m0_bootstrap_runtime_delegatee NOLOGIN;
           CREATE ROLE m0_bootstrap_database_grantor NOLOGIN;
           CREATE ROLE m0_bootstrap_function_grantor NOLOGIN;
+          CREATE ROLE m0_bootstrap_schema_owner NOLOGIN;
+          CREATE ROLE m0_bootstrap_schema_grantor NOLOGIN;
           ALTER ROLE notify_migrator BYPASSRLS REPLICATION
             CONNECTION LIMIT 0 VALID UNTIL '2000-01-01 00:00:00+00';
           ALTER ROLE notify_api BYPASSRLS REPLICATION CREATEROLE
@@ -408,17 +411,58 @@ describe("M0 PostgreSQL foundation", () => {
           RESET ROLE;
           GRANT notify_migrator, notify_api, notify_monitor
             TO m0_bootstrap_runtime_delegatee;
+          SET ROLE notify_migrator;
+          CREATE PROCEDURE public.m0_bootstrap_public_procedure_probe()
+          LANGUAGE sql
+          AS 'SELECT 1';
+          GRANT EXECUTE ON PROCEDURE public.m0_bootstrap_public_procedure_probe()
+            TO m0_bootstrap_function_grantor WITH GRANT OPTION;
+          RESET ROLE;
           GRANT USAGE ON SCHEMA public TO m0_bootstrap_function_grantor;
           GRANT EXECUTE ON FUNCTION public.digest(bytea, text)
             TO m0_bootstrap_function_grantor WITH GRANT OPTION;
           SET ROLE m0_bootstrap_function_grantor;
           GRANT EXECUTE ON FUNCTION public.digest(bytea, text)
             TO PUBLIC, notify_api, notify_monitor;
+          GRANT EXECUTE ON PROCEDURE public.m0_bootstrap_public_procedure_probe()
+            TO PUBLIC;
           RESET ROLE;
           REVOKE USAGE ON SCHEMA public FROM m0_bootstrap_function_grantor;
+          GRANT CREATE, USAGE ON SCHEMA public
+            TO m0_bootstrap_schema_grantor WITH GRANT OPTION;
+          SET ROLE m0_bootstrap_schema_grantor;
+          GRANT CREATE, USAGE ON SCHEMA public
+            TO PUBLIC, notify_api, notify_monitor;
+          RESET ROLE;
+          ALTER SCHEMA public OWNER TO m0_bootstrap_schema_owner;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+            GRANT ALL ON TABLES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+            GRANT ALL ON SEQUENCES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+            GRANT EXECUTE ON FUNCTIONS TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+            GRANT ALL ON TABLES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+            GRANT ALL ON SEQUENCES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+            GRANT EXECUTE ON FUNCTIONS TO PUBLIC, notify_api, notify_monitor;
         `);
 
         await connection.file(BOOTSTRAP_SQL_PATH, { cache: false });
+
+        await connection.unsafe(`
+          SET ROLE notify_migrator;
+          CREATE TABLE public.m0_bootstrap_default_acl_table_probe (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            secret text NOT NULL
+          );
+          CREATE FUNCTION public.m0_bootstrap_default_acl_function_probe()
+          RETURNS text
+          LANGUAGE sql
+          AS 'SELECT ''secret''::text';
+          RESET ROLE;
+        `);
 
         const roles = await connection<
           {
@@ -516,6 +560,120 @@ describe("M0 PostgreSQL foundation", () => {
           },
         ]);
 
+        const schemaPrivileges = await connection<
+          {
+            api_can_create: boolean;
+            api_can_use: boolean;
+            monitor_can_create: boolean;
+            monitor_can_use: boolean;
+            owner: string;
+            public_privilege_count: number;
+          }[]
+        >`
+          SELECT
+            pg_get_userbyid(namespace.nspowner) AS owner,
+            has_schema_privilege(
+              'notify_api',
+              'public',
+              'CREATE'
+            ) AS api_can_create,
+            has_schema_privilege(
+              'notify_api',
+              'public',
+              'USAGE'
+            ) AS api_can_use,
+            has_schema_privilege(
+              'notify_monitor',
+              'public',
+              'CREATE'
+            ) AS monitor_can_create,
+            has_schema_privilege(
+              'notify_monitor',
+              'public',
+              'USAGE'
+            ) AS monitor_can_use,
+            (
+              SELECT count(*)::int
+                FROM pg_namespace AS public_namespace
+                CROSS JOIN LATERAL aclexplode(public_namespace.nspacl) AS privilege
+               WHERE public_namespace.nspname = 'public'
+                 AND privilege.grantee = 0
+            ) AS public_privilege_count
+            FROM pg_namespace AS namespace
+           WHERE namespace.nspname = 'public'
+        `;
+        expect(schemaPrivileges).toEqual([
+          {
+            api_can_create: false,
+            api_can_use: true,
+            monitor_can_create: false,
+            monitor_can_use: true,
+            owner: "notify_migrator",
+            public_privilege_count: 0,
+          },
+        ]);
+
+        const futureObjectPrivileges = await connection<
+          {
+            api_can_execute_function: boolean;
+            api_can_read_table: boolean;
+            api_can_use_sequence: boolean;
+            monitor_can_insert_table: boolean;
+          }[]
+        >`
+          SELECT
+            has_table_privilege(
+              'notify_api',
+              'public.m0_bootstrap_default_acl_table_probe',
+              'SELECT'
+            ) AS api_can_read_table,
+            has_table_privilege(
+              'notify_monitor',
+              'public.m0_bootstrap_default_acl_table_probe',
+              'INSERT'
+            ) AS monitor_can_insert_table,
+            has_function_privilege(
+              'notify_api',
+              'public.m0_bootstrap_default_acl_function_probe()',
+              'EXECUTE'
+            ) AS api_can_execute_function,
+            has_sequence_privilege(
+              'notify_api',
+              'public.m0_bootstrap_default_acl_table_probe_id_seq',
+              'USAGE'
+            ) AS api_can_use_sequence
+        `;
+        expect(futureObjectPrivileges).toEqual([
+          {
+            api_can_execute_function: false,
+            api_can_read_table: false,
+            api_can_use_sequence: false,
+            monitor_can_insert_table: false,
+          },
+        ]);
+
+        const unexpectedDefaultPrivileges = await connection<
+          { count: number }[]
+        >`
+          SELECT count(*)::int AS count
+            FROM pg_default_acl AS defaults
+            LEFT JOIN pg_namespace AS namespace
+              ON namespace.oid = defaults.defaclnamespace
+            CROSS JOIN LATERAL aclexplode(defaults.defaclacl) AS privilege
+            LEFT JOIN pg_roles AS grantee ON grantee.oid = privilege.grantee
+           WHERE defaults.defaclrole = 'notify_migrator'::regrole
+             AND defaults.defaclobjtype IN ('r', 'S', 'f')
+             AND (
+               defaults.defaclnamespace = 0
+               OR namespace.nspname = 'public'
+             )
+             AND (
+               privilege.grantee = 0
+               OR grantee.rolname IN ('notify_api', 'notify_monitor')
+             )
+        `;
+        expect(unexpectedDefaultPrivileges).toEqual([{ count: 0 }]);
+
         const memberships = await connection<
           { granted_role: string; member_role: string }[]
         >`
@@ -549,6 +707,7 @@ describe("M0 PostgreSQL foundation", () => {
             api_can_digest: boolean;
             monitor_can_digest: boolean;
             public_can_digest: boolean;
+            public_can_procedure: boolean;
           }[]
         >`
           SELECT
@@ -566,13 +725,134 @@ describe("M0 PostgreSQL foundation", () => {
               'public',
               'public.digest(bytea,text)',
               'EXECUTE'
-            ) AS public_can_digest
+            ) AS public_can_digest,
+            has_function_privilege(
+              'public',
+              'public.m0_bootstrap_public_procedure_probe()',
+              'EXECUTE'
+            ) AS public_can_procedure
         `;
         expect(extensionPrivileges).toEqual([
           {
             api_can_digest: false,
             monitor_can_digest: false,
             public_can_digest: false,
+            public_can_procedure: false,
+          },
+        ]);
+      } finally {
+        await connection.unsafe("ROLLBACK");
+      }
+    } finally {
+      connection.release();
+    }
+  });
+
+  it("normalizes migrator default privileges before a local reset", async () => {
+    const connection = await bootstrap.reserve();
+    try {
+      await connection.unsafe("BEGIN");
+      try {
+        await connection.unsafe(`
+          SET ROLE notify_migrator;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+            GRANT ALL ON TABLES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+            GRANT ALL ON SEQUENCES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator
+            GRANT EXECUTE ON FUNCTIONS TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+            GRANT ALL ON TABLES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+            GRANT ALL ON SEQUENCES TO PUBLIC, notify_api, notify_monitor;
+          ALTER DEFAULT PRIVILEGES FOR ROLE notify_migrator IN SCHEMA public
+            GRANT EXECUTE ON FUNCTIONS TO PUBLIC, notify_api, notify_monitor;
+          RESET ROLE;
+          SET ROLE notify_migrator;
+        `);
+        await connection.unsafe(MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL);
+        await connection.unsafe(`
+          CREATE TABLE public.m0_reset_default_acl_table_probe (
+            id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY
+          );
+          CREATE FUNCTION public.m0_reset_default_acl_function_probe()
+          RETURNS integer
+          LANGUAGE sql
+          AS 'SELECT 1';
+          RESET ROLE;
+        `);
+
+        const privileges = await connection<
+          {
+            api_can_execute_function: boolean;
+            api_can_read_table: boolean;
+            api_can_use_sequence: boolean;
+            monitor_can_execute_function: boolean;
+            monitor_can_read_table: boolean;
+            monitor_can_use_sequence: boolean;
+            public_can_execute_function: boolean;
+            public_can_read_table: boolean;
+            public_can_use_sequence: boolean;
+          }[]
+        >`
+          SELECT
+            has_table_privilege(
+              'public',
+              'public.m0_reset_default_acl_table_probe',
+              'SELECT'
+            ) AS public_can_read_table,
+            has_table_privilege(
+              'notify_api',
+              'public.m0_reset_default_acl_table_probe',
+              'SELECT'
+            ) AS api_can_read_table,
+            has_table_privilege(
+              'notify_monitor',
+              'public.m0_reset_default_acl_table_probe',
+              'SELECT'
+            ) AS monitor_can_read_table,
+            has_sequence_privilege(
+              'public',
+              'public.m0_reset_default_acl_table_probe_id_seq',
+              'USAGE'
+            ) AS public_can_use_sequence,
+            has_sequence_privilege(
+              'notify_api',
+              'public.m0_reset_default_acl_table_probe_id_seq',
+              'USAGE'
+            ) AS api_can_use_sequence,
+            has_sequence_privilege(
+              'notify_monitor',
+              'public.m0_reset_default_acl_table_probe_id_seq',
+              'USAGE'
+            ) AS monitor_can_use_sequence,
+            has_function_privilege(
+              'public',
+              'public.m0_reset_default_acl_function_probe()',
+              'EXECUTE'
+            ) AS public_can_execute_function,
+            has_function_privilege(
+              'notify_api',
+              'public.m0_reset_default_acl_function_probe()',
+              'EXECUTE'
+            ) AS api_can_execute_function,
+            has_function_privilege(
+              'notify_monitor',
+              'public.m0_reset_default_acl_function_probe()',
+              'EXECUTE'
+            ) AS monitor_can_execute_function
+        `;
+        expect(privileges).toEqual([
+          {
+            api_can_execute_function: false,
+            api_can_read_table: false,
+            api_can_use_sequence: false,
+            monitor_can_execute_function: false,
+            monitor_can_read_table: false,
+            monitor_can_use_sequence: false,
+            public_can_execute_function: false,
+            public_can_read_table: false,
+            public_can_use_sequence: false,
           },
         ]);
       } finally {
@@ -860,6 +1140,9 @@ describe("M0 PostgreSQL foundation", () => {
     ).toThrow(/local\/test-only/);
     expect(() =>
       assertLocalResetUrl("postgresql://notify_migrator:secret@localhost/customer_data"),
+    ).toThrow(/local\/test-only/);
+    expect(() =>
+      assertLocalResetUrl("postgresql://notify_migrator:secret@[::1]:54329/notify"),
     ).toThrow(/local\/test-only/);
   });
 });
