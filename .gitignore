@@ -28,3 +28,7 @@ GoogleService-Info.plist
 
 # Local logs
 *.log
+
+# Agent working artifacts — the directories stay, their contents do not
+.agents/plans/*
+!.agents/plans/README.md
