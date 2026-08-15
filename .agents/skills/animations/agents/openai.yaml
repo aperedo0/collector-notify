@@ -1,0 +1,7 @@
+interface:
+  display_name: "Animations"
+  short_description: "Design and review motion"
+  default_prompt: "Use $animations to specify the motion for this change."
+
+policy:
+  allow_implicit_invocation: true

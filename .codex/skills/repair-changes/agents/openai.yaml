@@ -1,7 +1,0 @@
-interface:
-  display_name: "Repair Changes"
-  short_description: "Review and repair confirmed change defects"
-  default_prompt: "Use $repair-changes to review this change, fix confirmed regressions, and verify the result."
-
-policy:
-  allow_implicit_invocation: true

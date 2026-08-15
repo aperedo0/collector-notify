@@ -1,7 +1,0 @@
-interface:
-  display_name: "Audit Plan"
-  short_description: "Verify implementation plans against source"
-  default_prompt: "Use $audit-plan to verify this implementation plan against the repository before coding begins."
-
-policy:
-  allow_implicit_invocation: true

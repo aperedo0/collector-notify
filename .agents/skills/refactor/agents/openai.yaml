@@ -1,0 +1,7 @@
+interface:
+  display_name: "Refactor"
+  short_description: "Run one queued refactor target"
+  default_prompt: "Use $refactor to execute the next target in the refactor queue."
+
+policy:
+  allow_implicit_invocation: true

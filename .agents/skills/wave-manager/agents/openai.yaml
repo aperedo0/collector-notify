@@ -1,0 +1,7 @@
+interface:
+  display_name: "Wave Manager"
+  short_description: "Manage wave-based implementation"
+  default_prompt: "Use $wave-manager to implement this change in reviewed waves."
+
+policy:
+  allow_implicit_invocation: true

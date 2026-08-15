@@ -1,0 +1,7 @@
+interface:
+  display_name: "Clarity"
+  short_description: "Shape answers to be understood and acted on"
+  default_prompt: "Use $clarity to shape this answer for a reader with a small working memory."
+
+policy:
+  allow_implicit_invocation: true

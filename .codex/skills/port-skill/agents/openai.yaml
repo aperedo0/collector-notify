@@ -1,7 +1,0 @@
-interface:
-  display_name: "Port Skill"
-  short_description: "Convert agent skills into portable workflows"
-  default_prompt: "Use $port-skill to make this existing agent skill portable across repositories and tooling."
-
-policy:
-  allow_implicit_invocation: true

@@ -1,7 +1,0 @@
-interface:
-  display_name: "Refactor"
-  short_description: "Refactor code without changing behavior"
-  default_prompt: "Use $refactor to improve this bounded code area while preserving its observable behavior."
-
-policy:
-  allow_implicit_invocation: true

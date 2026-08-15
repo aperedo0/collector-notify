@@ -1,0 +1,7 @@
+interface:
+  display_name: "Behavior Map"
+  short_description: "Maintain the refactor-support ledgers"
+  default_prompt: "Use $behavior-map to refresh the behavior map and refactor queue."
+
+policy:
+  allow_implicit_invocation: true

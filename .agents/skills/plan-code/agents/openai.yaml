@@ -1,0 +1,7 @@
+interface:
+  display_name: "Plan Code"
+  short_description: "Create implementation-ready change plans"
+  default_prompt: "Use $plan-code to produce an evidence-backed implementation plan for this change."
+
+policy:
+  allow_implicit_invocation: true

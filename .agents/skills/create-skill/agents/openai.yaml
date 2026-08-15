@@ -1,0 +1,7 @@
+interface:
+  display_name: "Create Skill"
+  short_description: "Author and review agent skills"
+  default_prompt: "Use $create-skill to design or improve a coding-agent skill."
+
+policy:
+  allow_implicit_invocation: true

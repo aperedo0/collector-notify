@@ -1,0 +1,7 @@
+interface:
+  display_name: "Plan Audit"
+  short_description: "Improve then adversarially verify a plan"
+  default_prompt: "Use $plan-audit to harden this approved plan before any implementation starts."
+
+policy:
+  allow_implicit_invocation: true
