@@ -102,6 +102,10 @@ AGENT MAY NOT DECIDE
 | D32 | `fire_alert` null arguments | `fire_alert` raises when any of `p_alert_id`, `p_trigger_key`, `p_price_cents`, or `p_cooldown_minutes` is null. All four are required; the function never treats a missing argument as a defaulted one. | A null cooldown makes the cooldown predicate evaluate to null, which reads as false, so a fire that should have been throttled proceeds — verified against a live alert correctly blocked at 30 minutes. A null price makes the threshold comparison null, so the alert silently never fires. Defaulting either one hides a caller bug; declaring the function `STRICT` would make a null argument indistinguishable from "not fireable", which is the worse failure for a product whose job is firing alerts. The monitor is the only grantee and arrives at M2, so a loud failure costs nothing. Section 14's scope table makes `packages/db/migrations/**` off-limits from M1.5 onward, so M0 is the only milestone that can add the guard. |
 | D33 | `@types/node` | Not added. `packages/db` and `apps/api` keep their hand-declared runtime shims, and code needing a module path uses a local cast rather than relying on ambient Node types. | The package buys three copies of a four-line type declaration and one path bug that already fails loudly. A cast-based helper compiles under the repository's `tsconfig.base.json` with no new dependency, keeping Section 14's approved M0 dependency list exactly as written. M8 revisits tooling and can reconsider it there with nothing lost in the meantime. |
 | D34 | Indexes for the 6.5 maintenance purges | Not added in V1. `recent_events.occurred_at`, `offer_observations.observed_at`, and `alerts.deleted_at` stay unindexed and the purges sequentially scan. Revisit when the catalog passes roughly 50 products or a purge exceeds one second. | Measured, not estimated: at the seeded cadence the 30-day `offer_observations` window holds 864,000 rows, and deleting the 288,095 expired ones takes 119 ms — once per day. An index would save a tenth of a second daily and charge a write against roughly 28,800 daily inserts. `alerts` and `recent_events` are smaller still. Because Section 14 also blocks migrations after M0, an unnecessary index would be equally stuck; skipping one that is later needed costs only a slow background job. |
+| D35 | `alerts_rearm` fires only on a real change | The re-arm trigger is split in two: an unconditional `AFTER INSERT` trigger, and an `AFTER UPDATE OF price_threshold_cents, status` trigger carrying `WHEN (old.price_threshold_cents IS DISTINCT FROM new.price_threshold_cents OR old.status IS DISTINCT FROM new.status)`. A save that changes neither field no longer re-arms. | PostgreSQL's `UPDATE OF col` fires on column *mention*, not on a changed value, and the statement 6.2 authorises for "Update alert" writes both columns on every save. Reproduced: fire an alert, then re-save it with identical values — `armed` returns to true, `last_triggered_at` is cleared, and the next poll fires a second event and a second push 0.13 s later. Any authenticated client could bypass `MIN_RETRIGGER_MINUTES` indefinitely. The split is forced: a `WHEN` clause referencing `OLD` is invalid on an INSERT trigger. Section 14's scope table makes `packages/db/migrations/**` off-limits from M1.5 onward, so M0 is the only milestone that can fix it. |
+| D36 | pnpm overrides | The `lodash` override is scoped to all three declaring parents — `chevrotain`, `@chevrotain/gast`, `@chevrotain/cst-dts-gen` — rather than left unscoped. `@esbuild-kit/core-utils>esbuild` stays as-is. Both carry a comment recording why they exist and that Section 14's M0 list does not name them. | An unscoped override silently applies to every package M1–M9 adds. All three chevrotain packages declare an exact `lodash: 4.17.21`, and pnpm's `parent>child` selector matches only the direct edge, so scoping to `chevrotain` alone reintroduces 4.17.21 for the other two — verified with an isolated `pnpm install --lockfile-only` probe producing both versions. Naming all three keeps resolution byte-identical to today while bounding future packages. Rule 0.2.12 reserves dependency decisions, and neither override was previously recorded. |
+| D37 | Node version pin | `.node-version` is left at its current value. | It pins a patch that is not the one every green run was produced on, but confirming whether that version exists needs network access this session does not have. Downgrading root tooling on an unverifiable premise can only make the pin worse, and no check in the M0 gate reads the interpreter. Deferred to M8's tooling pass, which Section 14 already places after network-dependent verification. |
+| D38 | `erasableSyntaxOnly` | Added to `tsconfig.base.json`. | Preventive, not a fix — both packages compile with it today. Every `packages/db` entry point runs under Node's type stripping (D33), so an `enum`, `namespace`, or constructor parameter property added anywhere under `packages/db/src` passes `pnpm lint` and `pnpm typecheck` and then kills the process at load with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. The documented gate structurally cannot catch that class. No dependency and no behavior change, but Section 14's global exception covers root tooling only as a consequence of already-approved work, so it is recorded here. |
 
 ## 2. What changed vs the original spec
 
@@ -431,9 +435,19 @@ begin
   return new;
 end $fn$;
 
-create trigger alerts_rearm
-  after insert or update of price_threshold_cents, status on alerts
+create trigger alerts_rearm_insert
+  after insert on alerts
   for each row execute function public.rearm_alert();
+
+-- D35: `update of` fires on column MENTION, so a no-op save would clear the cooldown.
+-- The WHEN clause requires a changed value. It must be a separate trigger: a WHEN
+-- referencing OLD is invalid on an INSERT trigger.
+create trigger alerts_rearm_update
+  after update of price_threshold_cents, status on alerts
+  for each row
+  when (old.price_threshold_cents is distinct from new.price_threshold_cents
+        or old.status is distinct from new.status)
+  execute function public.rearm_alert();
 
 -- Atomic fire and FINAL AUTHORITY (D23): the row lock plus armed, cooldown, and
 -- CURRENT-threshold checks here decide firing; decide() in the monitor only
@@ -512,7 +526,7 @@ API mutation invariants, implemented with Drizzle transactions:
 - Create alert: derive `userId` from the session; begin; lock that user's `user_preferences` row `FOR UPDATE`; verify the product is active; count non-deleted alerts; reject at 50 with the stable `alert_limit_reached` error code; insert. Map the partial-unique violation to conflict. The transaction commits before success is returned.
 - Soft delete: update only rows matching both `user_id = session.user.id` and the supplied IDs; return only changed IDs. The API never hard-deletes customer alerts.
 - Restore: begin; lock the user's preferences row; count non-deleted alerts; process requested IDs in request order, restoring only rows owned by that user while capacity remains and no live alert exists for the product; return only restored IDs; commit once.
-- Update alert: update only rows matching the session user and `deleted_at is null`; accept only `price_threshold_cents` and `status`. The trigger above re-arms on either field.
+- Update alert: update only rows matching the session user and `deleted_at is null`; accept only `price_threshold_cents` and `status`. The update trigger above re-arms only when one of those fields actually changes (D35); a save that writes identical values leaves the cooldown intact.
 - Preferences: update only `notifications_enabled` for the session user. `plan` is never accepted by a customer DTO or update statement.
 - Push token registration: one `INSERT ... ON CONFLICT (expo_push_token) DO UPDATE` atomically assigns the token to the current session user and refreshes platform/`last_seen_at`. Unregister deletes only where both token and session user match.
 
