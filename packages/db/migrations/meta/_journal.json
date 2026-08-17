@@ -36,6 +36,20 @@
       "when": 1786899837695,
       "tag": "0004_m0_index_and_rearm_fix",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786990183864,
+      "tag": "0005_m0_fire_alert_liveness_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786992300204,
+      "tag": "0006_m0_deliveries_pending_by_target_index",
+      "breakpoints": true
     }
   ]
 }

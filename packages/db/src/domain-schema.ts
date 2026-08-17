@@ -203,6 +203,13 @@ export const notificationDeliveries = pgTable(
       table.channel,
       table.target,
     ),
+    // D42, created by migration 0006 rather than by drizzle-kit. It serves the
+    // D40 invalidation trigger's `where target = ? and status = 'pending'`,
+    // which the unique constraint above cannot: `target` is its third column.
+    // Declared here so this schema still describes the live database.
+    index("deliveries_pending_by_target")
+      .on(table.target)
+      .where(sql`${table.status} = 'pending'`),
   ],
 );
 

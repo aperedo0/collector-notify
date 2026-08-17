@@ -90,7 +90,7 @@ AGENT MAY NOT DECIDE
 | D20 | Auto-Buy posture (future) | Local desktop agent driving the user's own logged-in browser session. Credentials and checkout never touch the cloud. | Exactly Guppy's model: local-only automation, they never see passwords, browser session traffic looks like a normal user. They also started as a Chrome extension and later shipped a desktop app; user reviews attribute the switch to extension reliability problems (inference, see docs/COMPETITOR_RESEARCH.md). Notify skips straight to the desktop app. |
 | D21 | Notification preference semantics | One account-wide `user_preferences.notifications_enabled` (renamed from push_enabled). Off means `fire_alert` enqueues no pushes AND Electron main suppresses native notifications. Recent history records regardless. Per-device settings wait for the Auto-Buy-era devices table. | The spec has a single Notifications screen, which implies a single switch; a half-global, half-mobile flag is the worst of both. |
 | D22 | Re-arm semantics | Explicit user actions (create, price edit, pause/resume) reset the confirmation streak AND clear the cooldown, via the DB trigger. Automatic re-arms from an ineligible poll reset the streak in the loop but keep the cooldown. | An edit is the user asking for a fresh evaluation now; the cooldown exists to throttle automatic flapping, not deliberate user actions. |
-| D23 | Firing authority (split) | `fire_alert` locks the trigger-state row (FOR UPDATE) and is the final authority for armed state, cooldown, the CURRENT price threshold, alert liveness, product active status, and duplicate firing. The monitor remains the sole authority for source eligibility and the confirmation count; the DB does not re-verify `consecutive_eligible`. | The database contract stays correct under concurrent or duplicated monitors for everything it owns, without baking loop mechanics into SQL. A future agent must not assume the DB validates every firing condition. |
+| D23 | Firing authority (split) | `fire_alert` locks the alert row and then the trigger-state row (both FOR UPDATE, in that order — D39) and is the final authority for armed state, cooldown, the CURRENT price threshold, and alert liveness, all under those locks, and for duplicate firing via the `(alert_id, trigger_key)` unique key. Product active status is checked at fire time **without** locking the catalog row, so it is authoritative only for changes committed before the check (D39). The monitor remains the sole authority for source eligibility and the confirmation count; the DB does not re-verify `consecutive_eligible`. | The database contract stays correct under concurrent or duplicated monitors for everything it owns, without baking loop mechanics into SQL. A future agent must not assume the DB validates every firing condition. |
 | D24 | Proxy support (monitor-only) | `TargetOfferSource` fetches through a service-only `ProxyPool` of named groups, imported from TXT/CSV (JSON optional) by monitor CLI. Failover is health-based and triggers ONLY on proxy/network transport failure. Retailer responses (403/429/5xx/challenge) never rotate proxies and drive the source-wide breaker; a parse failure also never rotates but stays product-specific. Credentials are encrypted at rest with a monitor-only key and never reach clients. A commercial `FeedOfferSource` typically needs no proxies. | The price checker is central and developer-operated (D1); pooled proxies with health/cooldown are standard resilient-fetcher infrastructure. Keeping rotation strictly for transport failures preserves distinct proxy, retailer, and product-data error classes for debugging and keeps proxy switching from becoming an anti-bot/rate-limit evasion mechanism. |
 | D25 | PostgreSQL hosting | PostgreSQL 17 on Neon for hosted environments; PostgreSQL 17 in Docker for local development. Production disables scale-to-zero because the API requires a continuously connected listener. The schema/query layer is portable PostgreSQL, but a future provider move is an ordinary database migration and operational cutover, not merely a connection-string edit. | PostgreSQL 17 is stable and supported through November 2029. Neon minimizes early operations without making clients provider-specific. |
 | D26 | Data access | Drizzle ORM for ordinary queries; PostgreSQL constraints, partial indexes, row locks, triggers, and `fire_alert` remain the hard integrity floor. Drizzle Kit owns a single migration ledger with custom SQL migrations for functions, triggers, and grants. | Application ergonomics do not replace database correctness or concurrency control. |
@@ -106,6 +106,10 @@ AGENT MAY NOT DECIDE
 | D36 | pnpm overrides | The `lodash` override is scoped to all three declaring parents — `chevrotain`, `@chevrotain/gast`, `@chevrotain/cst-dts-gen` — rather than left unscoped. `@esbuild-kit/core-utils>esbuild` stays as-is. Both carry a comment recording why they exist and that Section 14's M0 list does not name them. | An unscoped override silently applies to every package M1–M9 adds. All three chevrotain packages declare an exact `lodash: 4.17.21`, and pnpm's `parent>child` selector matches only the direct edge, so scoping to `chevrotain` alone reintroduces 4.17.21 for the other two — verified with an isolated `pnpm install --lockfile-only` probe producing both versions. Naming all three keeps resolution byte-identical to today while bounding future packages. Rule 0.2.12 reserves dependency decisions, and neither override was previously recorded. |
 | D37 | Node version pin | `.node-version` is left at its current value. | It pins a patch that is not the one every green run was produced on, but confirming whether that version exists needs network access this session does not have. Downgrading root tooling on an unverifiable premise can only make the pin worse, and no check in the M0 gate reads the interpreter. Deferred to M8's tooling pass, which Section 14 already places after network-dependent verification. |
 | D38 | `erasableSyntaxOnly` | Added to `tsconfig.base.json`. | Preventive, not a fix — both packages compile with it today. Every `packages/db` entry point runs under Node's type stripping (D33), so an `enum`, `namespace`, or constructor parameter property added anywhere under `packages/db/src` passes `pnpm lint` and `pnpm typecheck` and then kills the process at load with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. The documented gate structurally cannot catch that class. No dependency and no behavior change, but Section 14's global exception covers root tooling only as a consequence of already-approved work, so it is recorded here. |
+| D39 | `fire_alert` liveness lock | `fire_alert` takes a `FOR UPDATE` row lock on the `alerts` row **before** the `alert_trigger_state` row, and returns null if the locked row is missing, soft-deleted, or not `active`. The order alerts → alert_trigger_state is mandatory. `products` is deliberately NOT locked; `is_active` is re-checked in the insert's `WHERE` at the freshest statement snapshot, leaving a window equal to the deactivating transaction's duration. | Before this, the function locked only `alert_trigger_state` and evaluated every liveness predicate against unlocked rows. Price and status edits appeared serialized only by accident, because `alerts_rearm_update` reaches the state row the function already holds; `deleted_at` is in no trigger's column list, so nothing serialized it. Reproduced: a fire during an open soft delete produced an event, a disarm, and a queued push for an alert the customer had just deleted (3 of 1519 under load). The order is forced — the user-edit path is `update alerts` → `alerts_rearm_update` → `rearm_alert()`, so acquiring state first inverts the pair; measured under a forced interleave, planned 0/600 vs inverted 300/600 (0/60 vs 60/60 on a second harness). Read those as comparative, not as production rates: under natural timing both orders measure zero. Two sequential statements rather than one joined statement, because in a join the row-lock order is a property of the planner's chosen shape — measured 0/300 one way, 91/200 with the `FROM` order flipped. Rejected alternative: adding `deleted_at` to `alerts_rearm_update`'s column list — it preserves the accident, and `rearm_alert` sets `armed = true` and clears the cooldown, so running it on a delete corrupts restore semantics against D22. Section 14 makes `packages/db/migrations/**` off-limits from M1.5 onward, so M0 is the only milestone that could fix it. |
+| D40 | Push-token ownership | **Primary, enforced by the database:** `invalidate_deliveries_on_token_change()` and its two `push_tokens` triggers (6.2) terminate every `pending` delivery addressed to a token the moment that token is unregistered or re-registered to another account — `status = 'failed'`, with `last_error = 'token_unregistered'` on the DELETE path and `'owner_changed'` on the `user_id`-change path. **Secondary, and mandatory rather than optional:** the dispatcher (7.7) must drop deliveries whose `target` no longer resolves to a `push_tokens` row owned by the delivery's owner-at-fire, recovered via `notification_deliveries.event_id → recent_events.user_id`, marking them `failed` / `owner_changed` so they leave the pending batch permanently. | `fire_alert` stores only the token string, so a token that changes hands between fire and send delivers one account's price alert to another — a privacy failure, not a missed notification. The trigger closes it at the source for every delivery that already exists, which no future milestone can forget to implement. It is not sufficient alone: `fire_alert`'s outbox insert reads `push_tokens` unlocked and the trigger is `AFTER`, so a fire overlapping an in-flight token change enqueues a `pending` delivery the trigger has already run past — measured, with the same change committed first producing no delivery at all. That residual window is what the dispatcher check closes, which is why it is mandatory. `SECURITY DEFINER` is load-bearing: `notify_api` may delete a push token but may not update `notification_deliveries`. Dropping rather than re-targeting: a push that can only reach the wrong account is worse than no push, and re-targeting would interact with the `(event_id, channel, target)` unique key. No schema change was needed — `recent_events.user_id`, the `event_id` FK, and `push_tokens.user_id` all already exist. |
+| D41 | Soft-delete lock order | Soft delete opens a transaction and locks the user's `user_preferences` row `FOR UPDATE` before touching `alerts`, mirroring the create and restore transactions D15 already governs. No ordering requirement is placed on the alert IDs themselves. | Restore locks `user_preferences` and soft delete locked nothing, so the two acquire `alerts` rows in opposing orders and deadlock: measured 40P01 on 12 of 12 rounds against 6.2 as previously written, and 0 of 12 with this lock alone. The rate depends on the plan shape — 12/12 reproduces when the bulk delete takes an index-scan plan locking in ascending id order while restore processes IDs in the opposite request order; a seq-scan plan over a small fixture yields 1/12. A deterministic ID ordering was considered and rejected: it is redundant given the lock, and "matching restore" would have been wrong, because 6.2 has restore process IDs in *request* order and D5/D15 make that load-bearing at the 50-alert cap — re-sorting would change which alerts come back. The transactions live in `apps/api/**`, which is M1.5, so this is recorded here rather than fixed: M0 may not write them. |
+| D42 | Index for the D40 invalidation trigger | `notification_deliveries` carries a partial index `deliveries_pending_by_target on (target) where status = 'pending'`, added in migration 0006. | D40's trigger runs `update notification_deliveries … where target = ? and status = 'pending'` on two customer-reachable paths — sign-out via `notify_api`, and 7.7's `DeviceNotRegistered` handler, which deletes tokens one row at a time. No existing index serves it: the table's only indexes are the primary key and `unique (event_id, channel, target)`, where `target` is the third column, so `EXPLAIN` gives a `Seq Scan` on an outbox that accumulates one row per push until the 60-day 6.5 purge — scan cost that grows with total product traffic rather than with the deleting user's data. It also narrows a measured hazard: 13 deadlocks in 30 rounds were measured between this trigger and 6.5's purge cascade when their delivery rows overlapped, against 0 in 30 when they did not. The index does not change which rows are locked — a sequential scan feeding an update locks only the tuples that pass the qual, verified: a seq-scan update of a matching row completed in 34 ms while an unrelated row was held locked, without blocking. What it changes is how long the statement runs and how many pages it touches, which narrows the window in which the two statements can overlap. This does not reverse D34, which declined indexes for the 6.5 purges themselves on measured evidence that they run once daily; this index serves a customer-facing path, not a background job. Section 14 makes `packages/db/migrations/**` off-limits from M1.5 onward, so M0 is the only milestone that can add it — the cost of being wrong is one unused index, while the cost of omitting it is permanent. |
 
 ## 2. What changed vs the original spec
 
@@ -323,6 +327,10 @@ create table notification_deliveries (
   created_at      timestamptz not null default now(),
   unique (event_id, channel, target)
 );
+-- D42: supports the D40 invalidation trigger's `where target = ? and status = 'pending'`.
+-- The unique constraint above cannot serve it -- target is its third column.
+create index deliveries_pending_by_target on notification_deliveries (target)
+  where status = 'pending';
 
 create table user_preferences (
   user_id      uuid primary key references users(id) on delete cascade,
@@ -449,8 +457,9 @@ create trigger alerts_rearm_update
         or old.status is distinct from new.status)
   execute function public.rearm_alert();
 
--- Atomic fire and FINAL AUTHORITY (D23): the row lock plus armed, cooldown, and
--- CURRENT-threshold checks here decide firing; decide() in the monitor only
+-- Atomic fire and FINAL AUTHORITY (D23): the alerts row lock, then the trigger-state
+-- row lock, plus the liveness, armed, cooldown, and CURRENT-threshold checks here
+-- decide firing (D39); decide() in the monitor only
 -- avoids pointless database calls. The threshold re-check closes the stale-price race:
 -- if the user lowers the threshold after the monitor read but before this call,
 -- the fire is refused. Event insert + disarm + delivery outbox commit together,
@@ -459,7 +468,8 @@ create or replace function public.fire_alert(
   p_alert_id uuid, p_trigger_key text, p_price_cents int, p_cooldown_minutes int
 ) returns uuid   -- new recent_events.id, or null if not fireable / already fired
 language plpgsql security definer set search_path = public as $fn$
-declare v_event_id uuid; v_user_id uuid; v_state alert_trigger_state%rowtype;
+declare v_event_id uuid; v_user_id uuid;
+        v_alert alerts%rowtype; v_state alert_trigger_state%rowtype;
 begin
   -- D32: every argument is required; a null silently corrupts the checks below
   if p_alert_id is null or p_trigger_key is null
@@ -467,6 +477,18 @@ begin
   then
     raise exception 'fire_alert requires non-null arguments';
   end if;
+
+  -- D39: lock the ALERT row before the trigger-state row and decide liveness under it.
+  -- Order is mandatory: the user-edit path is `update alerts` (alerts row lock) ->
+  -- alerts_rearm_update -> rearm_alert() (state row lock), so taking state first here
+  -- would invert the pair and deadlock against every price and status edit. Without
+  -- this lock a concurrent soft delete is invisible — deleted_at is in no trigger's
+  -- column list and takes no state lock — and a deleted alert still fires.
+  select * into v_alert from alerts
+   where id = p_alert_id
+   for update;
+  if not found or v_alert.deleted_at is not null or v_alert.status <> 'active'
+  then return null; end if;
 
   select * into v_state from alert_trigger_state
    where alert_id = p_alert_id
@@ -519,12 +541,44 @@ create trigger on_auth_user_created
   after insert on users
   for each row execute function public.handle_new_user();
 
+-- D40: a queued push must never reach an account that no longer owns the token.
+-- fire_alert stores only the token string, so the moment a token is unregistered or
+-- re-registered to another user, every delivery still pending for it is terminated at
+-- the source. SECURITY DEFINER is load-bearing: notify_api may delete a push token but
+-- may not update notification_deliveries. Split in two for the same reason as D35 --
+-- a WHEN clause referencing OLD is invalid on the delete side's counterpart, and an
+-- unconditional update trigger would fire on every unrelated push_tokens write.
+create or replace function public.invalidate_deliveries_on_token_change()
+returns trigger language plpgsql security definer set search_path = public as $fn$
+begin
+  update notification_deliveries
+     set status = 'failed',
+         -- a same-owner unregistration (including 7.7's DeviceNotRegistered delete)
+         -- changes no ownership and must not be labelled as if it had
+         last_error = case tg_op when 'DELETE' then 'token_unregistered'
+                                 else 'owner_changed' end
+   where target = old.expo_push_token
+     and status = 'pending';
+  return null;
+end $fn$;
+revoke execute on function public.invalidate_deliveries_on_token_change()
+  from public;
+
+create trigger push_tokens_invalidate_deliveries_delete
+  after delete on push_tokens
+  for each row execute function public.invalidate_deliveries_on_token_change();
+
+create trigger push_tokens_invalidate_deliveries_update
+  after update of user_id on push_tokens
+  for each row when (old.user_id is distinct from new.user_id)
+  execute function public.invalidate_deliveries_on_token_change();
+
 ```
 
 API mutation invariants, implemented with Drizzle transactions:
 
 - Create alert: derive `userId` from the session; begin; lock that user's `user_preferences` row `FOR UPDATE`; verify the product is active; count non-deleted alerts; reject at 50 with the stable `alert_limit_reached` error code; insert. Map the partial-unique violation to conflict. The transaction commits before success is returned.
-- Soft delete: update only rows matching both `user_id = session.user.id` and the supplied IDs; return only changed IDs. The API never hard-deletes customer alerts.
+- Soft delete: begin; lock that user's `user_preferences` row `FOR UPDATE` before touching `alerts` (D41); update only rows matching both `user_id = session.user.id` and the supplied IDs; return only changed IDs; commit. The API never hard-deletes customer alerts.
 - Restore: begin; lock the user's preferences row; count non-deleted alerts; process requested IDs in request order, restoring only rows owned by that user while capacity remains and no live alert exists for the product; return only restored IDs; commit once.
 - Update alert: update only rows matching the session user and `deleted_at is null`; accept only `price_threshold_cents` and `status`. The update trigger above re-arms only when one of those fields actually changes (D35); a save that writes identical values leaves the cooldown intact.
 - Preferences: update only `notifications_enabled` for the session user. `plan` is never accepted by a customer DTO or update statement.
@@ -736,7 +790,24 @@ Scope: US retailers only in V1 (matches Guppy). Nothing outside these adapter fi
 
 ### 7.7 Push dispatch (mobile only; desktop is D8)
 
-Rows in `notification_deliveries` are created only by `fire_alert` (6.2). The dispatcher just drains them:
+Rows in `notification_deliveries` are created only by `fire_alert` (6.2). The dispatcher drains them, but not blindly — it must first apply D40's ownership check, because a delivery enqueued by a `fire_alert` running concurrently with a token change is created after 6.2's invalidation trigger has already fired. Before each send batch:
+
+```sql
+-- D40: terminate deliveries whose token no longer belongs to the user the event was
+-- fired for. Scoped to the same batch the send loop takes, in id order, to bound the
+-- row set and reduce overlap with 6.2's target-scoped invalidation trigger.
+update notification_deliveries d
+   set status = 'failed', last_error = 'owner_changed'
+ where d.status = 'pending'
+   and d.next_attempt_at <= now()
+   and not exists (
+     select 1 from recent_events e
+       join push_tokens t
+         on t.expo_push_token = d.target and t.user_id = e.user_id
+      where e.id = d.event_id);
+```
+
+An inner join on `(t.expo_push_token = d.target and t.user_id = e.user_id)` is required rather than a `push_tokens.user_id <> e.user_id` predicate: the latter evaluates to null, not true, when the token row was already deleted by the `DeviceNotRegistered` path below. Then the send loop drains what remains:
 
 ```text
 dispatcher loop (same process as the monitor, every 10s):

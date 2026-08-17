@@ -47,6 +47,7 @@ const expectedFunctions = [
   "emit_realtime_notification",
   "fire_alert",
   "handle_new_user",
+  "invalidate_deliveries_on_token_change",
   "rearm_alert",
   "set_updated_at",
 ] as const;
@@ -58,6 +59,8 @@ const expectedTriggers = [
   "alerts_touch",
   "on_auth_user_created",
   "prefs_touch",
+  "push_tokens_invalidate_deliveries_delete",
+  "push_tokens_invalidate_deliveries_update",
   "recent_events_realtime",
   "user_preferences_realtime",
 ] as const;
@@ -66,6 +69,7 @@ const expectedIndexes = [
   "accounts_userId_idx",
   "alerts_by_product",
   "alerts_one_active_per_product",
+  "deliveries_pending_by_target",
   "offer_obs_by_product",
   "proxy_by_group",
   "realtime_tickets_expiry",
@@ -330,6 +334,11 @@ const expectedFunctionTuples = [
     proconfig: ["search_path=public"],
   },
   {
+    function_name: "invalidate_deliveries_on_token_change()",
+    prosecdef: true,
+    proconfig: ["search_path=public"],
+  },
+  {
     function_name: "rearm_alert()",
     prosecdef: true,
     proconfig: ["search_path=public"],
@@ -377,6 +386,18 @@ const expectedTriggerDefinitions = [
     table_name: "user_preferences",
     definition:
       "CREATE TRIGGER prefs_touch BEFORE UPDATE ON public.user_preferences FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
+  },
+  {
+    trigger_name: "push_tokens_invalidate_deliveries_delete",
+    table_name: "push_tokens",
+    definition:
+      "CREATE TRIGGER push_tokens_invalidate_deliveries_delete AFTER DELETE ON public.push_tokens FOR EACH ROW EXECUTE FUNCTION invalidate_deliveries_on_token_change()",
+  },
+  {
+    trigger_name: "push_tokens_invalidate_deliveries_update",
+    table_name: "push_tokens",
+    definition:
+      "CREATE TRIGGER push_tokens_invalidate_deliveries_update AFTER UPDATE OF user_id ON public.push_tokens FOR EACH ROW WHEN ((old.user_id IS DISTINCT FROM new.user_id)) EXECUTE FUNCTION invalidate_deliveries_on_token_change()",
   },
   {
     trigger_name: "recent_events_realtime",
@@ -566,6 +587,8 @@ const expectedIndexDefinitions: Record<(typeof expectedIndexes)[number], string>
     "CREATE INDEX alerts_by_product ON public.alerts USING btree (product_id) WHERE (deleted_at IS NULL)",
   alerts_one_active_per_product:
     "CREATE UNIQUE INDEX alerts_one_active_per_product ON public.alerts USING btree (user_id, product_id) WHERE (deleted_at IS NULL)",
+  deliveries_pending_by_target:
+    "CREATE INDEX deliveries_pending_by_target ON public.notification_deliveries USING btree (target) WHERE (status = 'pending'::text)",
   offer_obs_by_product:
     "CREATE INDEX offer_obs_by_product ON public.offer_observations USING btree (product_id, observed_at DESC)",
   proxy_by_group:
@@ -660,6 +683,93 @@ async function readAlertTriggerState(
      WHERE alert_id = ${alertId}
   `;
   return firstRow(rows);
+}
+
+// `fire_alert` waiting on a contended row lock is invisible to a client on its
+// own — the call simply takes as long as the holder does — so `lock_timeout`
+// makes the wait observable by aborting the statement with 55P03
+// (lock_not_available) instead. `monitor.begin` is deliberate: it rolls back on
+// throw, whereas a raw `BEGIN` on this module-level `max: 1` handle would leave
+// an aborted transaction behind and fail every later test with 25P02.
+async function expectFireAlertToBlock(alertId: string, priceCents: number): Promise<void> {
+  try {
+    await monitor.begin(async (transaction) => {
+      await transaction.unsafe("SET LOCAL lock_timeout = '250ms'");
+      return transaction`
+        SELECT public.fire_alert(
+          ${alertId}::uuid,
+          ${freshTriggerKey()},
+          ${priceCents},
+          ${FIRE_ALERT_COOLDOWN_MINUTES}
+        )
+      `;
+    });
+    throw new Error("Expected fire_alert to wait for the contended alerts row lock.");
+  } catch (error: unknown) {
+    expect(error).toMatchObject({ code: "55P03" });
+  }
+}
+
+// Holds an UNCOMMITTED soft delete of one alert open for the duration of
+// `whileHeld`, then rolls it back so the fixture teardown sees the alert in its
+// original state.
+//
+// It runs on its own connection, not the shared `api` handle, because every
+// shared handle is `max: 1`: holding a transaction open on one would starve the
+// connection the rest of the test needs and hang the suite. `notify_api` is the
+// role that owns this write path — it holds the column-level UPDATE on
+// `alerts.deleted_at` that `notify_monitor` lacks.
+async function whileSoftDeleteIsInFlight(
+  alertId: string,
+  whileHeld: () => Promise<void>,
+): Promise<void> {
+  const connection = postgres(LOCAL_API_URL, postgresOptions);
+  try {
+    const holder = await connection.reserve();
+    try {
+      await holder.unsafe("BEGIN");
+      try {
+        // Awaited to completion before `whileHeld` runs, so whatever it does
+        // begins only once this soft delete holds the alerts row. That ordering
+        // is the handshake — no sleeps, no timing assumptions.
+        await holder`UPDATE alerts SET deleted_at = now() WHERE id = ${alertId}`;
+        await whileHeld();
+      } finally {
+        await holder.unsafe("ROLLBACK");
+      }
+    } finally {
+      holder.release();
+    }
+  } finally {
+    await connection.end();
+  }
+}
+
+// Read on `migrator`: `notify_api` has no access at all to the delivery outbox.
+async function readDeliveryOutcome(
+  eventId: string,
+): Promise<{ status: string; last_error: string | null }> {
+  const rows = await migrator<{ status: string; last_error: string | null }[]>`
+    SELECT status, last_error
+      FROM notification_deliveries
+     WHERE event_id = ${eventId}
+  `;
+  return firstRow(rows);
+}
+
+// PLAN.md section 6.2's "Push token registration" invariant, verbatim in shape:
+// one upsert atomically assigns the token to the current session user. This is
+// the statement the mobile app actually runs, so D40's trigger has to fire on
+// it and not merely on a bare `UPDATE`.
+async function registerPushToken(pushToken: string, ownerId: string): Promise<void> {
+  await migrator`
+    INSERT INTO push_tokens (user_id, platform, expo_push_token)
+    VALUES (${ownerId}, 'ios', ${pushToken})
+    ON CONFLICT (expo_push_token) DO UPDATE
+      SET user_id = excluded.user_id,
+          platform = excluded.platform,
+          last_seen_at = now()
+  `;
 }
 
 beforeAll(() => {
@@ -1491,7 +1601,7 @@ describe("M0 PostgreSQL foundation", () => {
       migrationsTable: "__drizzle_migrations",
     });
     assertMigrationLedgerIntegrity(checkedInMigrations, migrationRows);
-    expect(migrationRows).toHaveLength(5);
+    expect(migrationRows).toHaveLength(7);
 
     const products = await migrator<
       {
@@ -2141,6 +2251,158 @@ describe("M0 PostgreSQL foundation", () => {
       } finally {
         await subscription.unlisten();
       }
+    });
+
+    // The D39 regression test. Before migration 0005 the only row lock
+    // `fire_alert` took was on `alert_trigger_state`, and `deleted_at` is in no
+    // trigger's column list, so an in-flight soft delete was invisible: the call
+    // fired a phantom event for an alert the customer had just deleted instead
+    // of waiting for it. Measured on that function: no 55P03, an event returned,
+    // a delivery queued.
+    it("refuses to fire while a soft delete of the same alert is in flight (D39)", async () => {
+      const { alertId } = requireFireAlertFixture();
+      await whileSoftDeleteIsInFlight(alertId, async () => {
+        await expectFireAlertToBlock(alertId, 4500);
+      });
+
+      // 55P03 aborts the whole function — it is one statement in one
+      // transaction — so there is no partial write to find here.
+      const eventRows = await migrator<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM recent_events WHERE alert_id = ${alertId}
+      `;
+      expect(firstRow(eventRows).count).toBe("0");
+    });
+
+    // A behavior pin rather than a regression test: the `INSERT ... SELECT`
+    // already refused a COMMITTED soft delete before migration 0005. It is here
+    // so the locked guard that now decides this case cannot silently change what
+    // the caller and the trigger state see.
+    it("refuses a committed soft delete and leaves trigger state untouched (D39)", async () => {
+      const { alertId } = requireFireAlertFixture();
+      await api`UPDATE alerts SET deleted_at = now() WHERE id = ${alertId}`;
+
+      expect(await callFireAlert(alertId, freshTriggerKey(), 4500)).toBeNull();
+
+      const eventRows = await migrator<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM recent_events WHERE alert_id = ${alertId}
+      `;
+      expect(firstRow(eventRows).count).toBe("0");
+
+      const deliveryRows = await migrator<{ count: string }[]>`
+        SELECT count(*)::text AS count
+          FROM notification_deliveries AS delivery
+          JOIN recent_events AS event ON event.id = delivery.event_id
+         WHERE event.alert_id = ${alertId}
+      `;
+      expect(firstRow(deliveryRows).count).toBe("0");
+
+      // Still armed: a refused fire must never consume the alert's readiness.
+      expect((await readAlertTriggerState(alertId)).armed).toBe(true);
+    });
+
+    it("terminates pending deliveries when a push token is re-registered to another user (D40)", async () => {
+      const { userId, alertId } = requireFireAlertFixture();
+      const eventId = await callFireAlert(alertId, freshTriggerKey(), 4500);
+      if (eventId === null) {
+        throw new Error("Expected fire_alert to queue the pending delivery this test terminates.");
+      }
+      const tokenRows = await migrator<{ expo_push_token: string }[]>`
+        SELECT expo_push_token FROM push_tokens WHERE user_id = ${userId}
+      `;
+      const { expo_push_token: pushToken } = firstRow(tokenRows);
+      expect(await readDeliveryOutcome(eventId)).toEqual({
+        status: "pending",
+        last_error: null,
+      });
+
+      // The account the token is handed to. `afterEach` deletes only the fixture
+      // user, and once the token belongs to this second user it cascades from
+      // this second user — so without the `finally` below, the token, this user,
+      // and its preferences row would survive every run.
+      const otherEmail = `m0-token-owner-${nextFixtureSuffix()}@example.test`;
+      const otherUserRows = await api<{ id: string }[]>`
+        INSERT INTO users (name, email) VALUES (${otherEmail}, ${otherEmail}) RETURNING id
+      `;
+      const { id: otherUserId } = firstRow(otherUserRows);
+
+      try {
+        // CONTROL: an unrelated column. The trigger watches `OF user_id`, so a
+        // device merely reporting a new platform must change nothing. Without
+        // this the test would pass against a trigger that fires on every write.
+        await migrator`
+          UPDATE push_tokens SET platform = 'android' WHERE expo_push_token = ${pushToken}
+        `;
+        expect(await readDeliveryOutcome(eventId)).toEqual({
+          status: "pending",
+          last_error: null,
+        });
+
+        // CONTROL: a same-owner re-registration. The WHEN clause requires the
+        // owner to actually change, so a device refreshing its registration must
+        // not lose its own queued push.
+        await registerPushToken(pushToken, userId);
+        expect(await readDeliveryOutcome(eventId)).toEqual({
+          status: "pending",
+          last_error: null,
+        });
+
+        // The production shape: the same upsert, now landing on another account.
+        await registerPushToken(pushToken, otherUserId);
+        expect(await readDeliveryOutcome(eventId)).toEqual({
+          status: "failed",
+          last_error: "owner_changed",
+        });
+
+        // The same guarantee for a bare `UPDATE`, which keeps the trigger pinned
+        // to the column rather than to the upsert. The token goes back first and
+        // the delivery is requeued second, so that hand-back cannot terminate
+        // the row it is about to requeue.
+        await migrator`
+          UPDATE push_tokens SET user_id = ${userId} WHERE expo_push_token = ${pushToken}
+        `;
+        await migrator`
+          UPDATE notification_deliveries
+             SET status = 'pending', last_error = null
+           WHERE event_id = ${eventId}
+        `;
+        await migrator`
+          UPDATE push_tokens SET user_id = ${otherUserId} WHERE expo_push_token = ${pushToken}
+        `;
+        expect(await readDeliveryOutcome(eventId)).toEqual({
+          status: "failed",
+          last_error: "owner_changed",
+        });
+      } finally {
+        await migrator`DELETE FROM users WHERE id = ${otherUserId}`;
+      }
+    });
+
+    it("terminates pending deliveries when a push token is unregistered (D40)", async () => {
+      const { userId, alertId } = requireFireAlertFixture();
+      const eventId = await callFireAlert(alertId, freshTriggerKey(), 4500);
+      if (eventId === null) {
+        throw new Error("Expected fire_alert to queue the pending delivery this test terminates.");
+      }
+      expect(await readDeliveryOutcome(eventId)).toEqual({
+        status: "pending",
+        last_error: null,
+      });
+
+      // On `migrator`, the handle both D40 tests share: `notify_api` has no
+      // SELECT on `notification_deliveries`, and `notify_monitor` has no UPDATE
+      // on `push_tokens`, which the re-registration test above needs for its
+      // upsert. `notify_monitor` *can* DELETE a push token and read the outbox
+      // (both verified) — section 7.7's `DeviceNotRegistered` handler is exactly
+      // that, so nothing here says the monitor cannot unregister a token.
+      await migrator`DELETE FROM push_tokens WHERE user_id = ${userId}`;
+
+      // `token_unregistered`, not `owner_changed`: the dominant cause of a
+      // delete is the same owner removing their own device — including section
+      // 7.7's `DeviceNotRegistered` handling — where nothing changed hands.
+      expect(await readDeliveryOutcome(eventId)).toEqual({
+        status: "failed",
+        last_error: "token_unregistered",
+      });
     });
   });
 

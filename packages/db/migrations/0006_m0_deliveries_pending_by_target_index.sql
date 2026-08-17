@@ -1,0 +1,27 @@
+-- D42: D40's invalidation trigger (migration 0005) runs
+-- `UPDATE notification_deliveries SET ... WHERE target = ? AND status = 'pending'`
+-- and no existing index can serve it. The table's only indexes are the primary
+-- key and `unique (event_id, channel, target)`, where `target` is the THIRD
+-- column, so the planner had to fall back to a sequential scan (measured:
+-- `Seq Scan on notification_deliveries` over a 2,000-row fixture).
+--
+-- That scan sits on two customer-reachable paths -- sign-out through notify_api,
+-- and section 7.7's `DeviceNotRegistered` handler, which deletes tokens one row
+-- at a time -- against an outbox that accumulates one row per push until the
+-- 60-day section 6.5 purge. Its cost therefore grows with total product traffic
+-- rather than with the deleting customer's own data.
+--
+-- It also narrows a measured hazard: a sequential scan takes its row locks in
+-- physical order across the whole relation, which is the shape that produced 13
+-- deadlocks in 30 rounds between this trigger and section 6.5's purge cascade.
+--
+-- This does not reverse D34, which declined indexes for the 6.5 purges on
+-- measured evidence that they run once daily; this index serves a customer-facing
+-- path, not a background job. It is added now because PLAN.md section 14 closes
+-- `packages/db/migrations/**` from M1.5 onward: the cost of being wrong is one
+-- unused index, and the cost of omitting it is permanent.
+--
+-- Partial on `status = 'pending'` because that is the only status the trigger
+-- touches, and a terminal row never returns to it.
+CREATE INDEX deliveries_pending_by_target ON notification_deliveries (target)
+  WHERE status = 'pending';
