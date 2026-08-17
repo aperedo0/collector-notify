@@ -8,8 +8,19 @@ saveExact: true
 strictPeerDependencies: false
 
 overrides:
+  # D36 (PLAN.md Section 1): both overrides below are pnpm dependency-resolution
+  # decisions that Section 0.2 rule 12 reserves; Section 14's M0 file list does
+  # not name pnpm-workspace.yaml, so this file changes only as a consequence of
+  # already-approved work (Section 14's global exception).
+  # `chevrotain`, `@chevrotain/gast`, and `@chevrotain/cst-dts-gen` each
+  # declare their own exact `lodash: 4.17.21`. pnpm's `parent>child` override
+  # selector matches only the direct edge, so scoping to `chevrotain` alone
+  # reintroduces 4.17.21 for the other two — verified with an isolated
+  # `pnpm install --lockfile-only` probe. All three parents must stay listed.
   "@esbuild-kit/core-utils>esbuild": 0.25.12
-  lodash: 4.18.1
+  "chevrotain>lodash": 4.18.1
+  "@chevrotain/gast>lodash": 4.18.1
+  "@chevrotain/cst-dts-gen>lodash": 4.18.1
 
 allowBuilds:
   esbuild: true

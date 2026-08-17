@@ -29,6 +29,13 @@
       "when": 1786832468086,
       "tag": "0003_m0_fire_alert_null_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786899837695,
+      "tag": "0004_m0_index_and_rearm_fix",
+      "breakpoints": true
     }
   ]
 }

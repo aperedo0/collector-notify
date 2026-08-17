@@ -1,6 +1,6 @@
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import postgres, { type Sql } from "postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   LOCAL_MIGRATION_URL,
@@ -53,7 +53,8 @@ const expectedFunctions = [
 
 const expectedTriggers = [
   "alerts_realtime",
-  "alerts_rearm",
+  "alerts_rearm_insert",
+  "alerts_rearm_update",
   "alerts_touch",
   "on_auth_user_created",
   "prefs_touch",
@@ -84,6 +85,500 @@ const expectedCheckConstraints = [
   "push_tokens_platform_check",
   "user_preferences_plan_check",
 ] as const;
+
+type ColumnPrivilege = "SELECT" | "INSERT" | "UPDATE";
+type TablePrivilege = "DELETE" | "TRUNCATE" | "REFERENCES" | "TRIGGER";
+type MatrixRole = "notify_api" | "notify_monitor" | "public";
+
+// A role's grant on one table, transcribed line-by-line from PLAN.md section
+// 6.3. `"*"` means every column of the table holds that privilege; a column
+// name array means only those columns do; an absent key means the role holds
+// none of that privilege anywhere on the table.
+type TableRoleGrant = {
+  readonly select?: "*" | readonly string[];
+  readonly insert?: "*" | readonly string[];
+  readonly update?: "*" | readonly string[];
+  readonly tablePrivileges?: readonly TablePrivilege[];
+};
+
+const NO_PRIVILEGES: TableRoleGrant = {};
+
+// `has_table_privilege` cannot see column-level grants — measured:
+// `has_table_privilege('notify_api', 'user_preferences', 'UPDATE')` is false
+// while the column grant on `notifications_enabled` exists — so it would
+// encode four real section 6.3 grants as "no privilege" and could not detect
+// their revocation. SELECT/INSERT/UPDATE are therefore asserted per column
+// with `has_column_privilege` below; DELETE/TRUNCATE/REFERENCES/TRIGGER are
+// whole-table-only privileges in this schema, asserted with
+// `has_table_privilege`. `public` carries an empty grant on every table: a
+// per-table `GRANT ... TO PUBLIC` would otherwise be invisible to this suite.
+const GRANT_MATRIX: Record<
+  (typeof expectedTables)[number],
+  Record<MatrixRole, TableRoleGrant>
+> = {
+  accounts: {
+    notify_api: { select: "*", insert: "*", update: "*", tablePrivileges: ["DELETE"] },
+    notify_monitor: NO_PRIVILEGES,
+    public: NO_PRIVILEGES,
+  },
+  alert_trigger_state: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  alerts: {
+    notify_api: {
+      select: "*",
+      insert: "*",
+      update: ["price_threshold_cents", "status", "deleted_at"],
+    },
+    notify_monitor: { select: "*", tablePrivileges: ["DELETE"] },
+    public: NO_PRIVILEGES,
+  },
+  fake_offers: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  maintenance_job_state: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  monitor_product_state: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  monitor_source_config: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  monitor_source_state: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  notification_deliveries: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  offer_observations: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  products: {
+    notify_api: { select: "*" },
+    notify_monitor: { select: "*", insert: "*", update: "*" },
+    public: NO_PRIVILEGES,
+  },
+  proxy_endpoints: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  proxy_groups: {
+    notify_api: NO_PRIVILEGES,
+    notify_monitor: {
+      select: "*",
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  push_tokens: {
+    notify_api: { select: "*", insert: "*", update: "*", tablePrivileges: ["DELETE"] },
+    notify_monitor: { select: "*", tablePrivileges: ["DELETE"] },
+    public: NO_PRIVILEGES,
+  },
+  realtime_tickets: {
+    notify_api: {
+      select: ["ticket_hash", "user_id", "expires_at", "consumed_at"],
+      insert: "*",
+      update: "*",
+      tablePrivileges: ["DELETE"],
+    },
+    notify_monitor: {
+      select: ["expires_at", "consumed_at"],
+      tablePrivileges: ["DELETE"],
+    },
+    public: NO_PRIVILEGES,
+  },
+  recent_events: {
+    notify_api: { select: "*" },
+    // INSERT on recent_events happens only through the security-definer
+    // `fire_alert`; notify_monitor holds no direct table-level INSERT.
+    notify_monitor: { select: "*", tablePrivileges: ["DELETE"] },
+    public: NO_PRIVILEGES,
+  },
+  sessions: {
+    notify_api: { select: "*", insert: "*", update: "*", tablePrivileges: ["DELETE"] },
+    notify_monitor: NO_PRIVILEGES,
+    public: NO_PRIVILEGES,
+  },
+  user_preferences: {
+    notify_api: { select: "*", update: ["notifications_enabled"] },
+    notify_monitor: { select: "*" },
+    public: NO_PRIVILEGES,
+  },
+  users: {
+    notify_api: { select: "*", insert: "*", update: "*", tablePrivileges: ["DELETE"] },
+    notify_monitor: NO_PRIVILEGES,
+    public: NO_PRIVILEGES,
+  },
+  verifications: {
+    notify_api: { select: "*", insert: "*", update: "*", tablePrivileges: ["DELETE"] },
+    notify_monitor: NO_PRIVILEGES,
+    public: NO_PRIVILEGES,
+  },
+};
+
+function expectedColumnPrivilege(
+  table: string,
+  role: MatrixRole,
+  column: string,
+  privilege: ColumnPrivilege,
+): boolean {
+  const grant = GRANT_MATRIX[table as (typeof expectedTables)[number]][role];
+  const grantedColumns =
+    privilege === "SELECT" ? grant.select : privilege === "INSERT" ? grant.insert : grant.update;
+  if (grantedColumns === undefined) {
+    return false;
+  }
+  return grantedColumns === "*" || grantedColumns.includes(column);
+}
+
+function expectedTablePrivilege(
+  table: string,
+  role: MatrixRole,
+  privilege: TablePrivilege,
+): boolean {
+  const grant = GRANT_MATRIX[table as (typeof expectedTables)[number]][role];
+  return grant.tablePrivileges?.includes(privilege) ?? false;
+}
+
+// Tuple inventories for step 10: name-only inventories (the first test below)
+// cannot see a trigger's WHEN clause or column list, a function's SECURITY
+// DEFINER flag or search_path, a constraint's ON DELETE action, or an
+// index's NULLS ordering. `pg_get_triggerdef` carries timing, event, column
+// list, WHEN clause, and function in one string, so it cannot render
+// identically for two triggers that differ only in those — exactly what
+// D35's split of `alerts_rearm` turns on.
+const expectedFunctionTuples = [
+  {
+    function_name: "emit_realtime_notification()",
+    prosecdef: true,
+    proconfig: ["search_path=public"],
+  },
+  {
+    function_name: "fire_alert(uuid,text,integer,integer)",
+    prosecdef: true,
+    proconfig: ["search_path=public"],
+  },
+  {
+    function_name: "handle_new_user()",
+    prosecdef: true,
+    proconfig: ["search_path=public"],
+  },
+  {
+    function_name: "rearm_alert()",
+    prosecdef: true,
+    proconfig: ["search_path=public"],
+  },
+  {
+    function_name: "set_updated_at()",
+    prosecdef: false,
+    proconfig: ["search_path=public"],
+  },
+];
+
+const expectedTriggerDefinitions = [
+  {
+    trigger_name: "alerts_realtime",
+    table_name: "alerts",
+    definition:
+      "CREATE TRIGGER alerts_realtime AFTER INSERT OR UPDATE ON public.alerts FOR EACH ROW EXECUTE FUNCTION emit_realtime_notification()",
+  },
+  {
+    trigger_name: "alerts_rearm_insert",
+    table_name: "alerts",
+    definition:
+      "CREATE TRIGGER alerts_rearm_insert AFTER INSERT ON public.alerts FOR EACH ROW EXECUTE FUNCTION rearm_alert()",
+  },
+  {
+    trigger_name: "alerts_rearm_update",
+    table_name: "alerts",
+    definition:
+      "CREATE TRIGGER alerts_rearm_update AFTER UPDATE OF price_threshold_cents, status ON public.alerts FOR EACH ROW WHEN (((old.price_threshold_cents IS DISTINCT FROM new.price_threshold_cents) OR (old.status IS DISTINCT FROM new.status))) EXECUTE FUNCTION rearm_alert()",
+  },
+  {
+    trigger_name: "alerts_touch",
+    table_name: "alerts",
+    definition:
+      "CREATE TRIGGER alerts_touch BEFORE UPDATE ON public.alerts FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
+  },
+  {
+    trigger_name: "on_auth_user_created",
+    table_name: "users",
+    definition:
+      "CREATE TRIGGER on_auth_user_created AFTER INSERT ON public.users FOR EACH ROW EXECUTE FUNCTION handle_new_user()",
+  },
+  {
+    trigger_name: "prefs_touch",
+    table_name: "user_preferences",
+    definition:
+      "CREATE TRIGGER prefs_touch BEFORE UPDATE ON public.user_preferences FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
+  },
+  {
+    trigger_name: "recent_events_realtime",
+    table_name: "recent_events",
+    definition:
+      "CREATE TRIGGER recent_events_realtime AFTER INSERT ON public.recent_events FOR EACH ROW EXECUTE FUNCTION emit_realtime_notification()",
+  },
+  {
+    trigger_name: "user_preferences_realtime",
+    table_name: "user_preferences",
+    definition:
+      "CREATE TRIGGER user_preferences_realtime AFTER INSERT OR UPDATE ON public.user_preferences FOR EACH ROW EXECUTE FUNCTION emit_realtime_notification()",
+  },
+];
+
+// `confdeltype` is blank (a single space) on the unique constraints below —
+// it is only meaningful for foreign keys — and is asserted anyway because a
+// future migration could turn one of them into a foreign key without
+// renaming it.
+const expectedUniqueAndForeignKeyConstraints = [
+  {
+    constraint_name: "accounts_user_id_users_id_fk",
+    table_name: "accounts",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "alert_trigger_state_alert_id_alerts_id_fk",
+    table_name: "alert_trigger_state",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "alerts_product_id_products_id_fk",
+    table_name: "alerts",
+    contype: "f",
+    confdeltype: "a",
+  },
+  {
+    constraint_name: "alerts_user_id_users_id_fk",
+    table_name: "alerts",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "fake_offers_product_id_products_id_fk",
+    table_name: "fake_offers",
+    contype: "f",
+    confdeltype: "a",
+  },
+  {
+    constraint_name: "monitor_product_state_product_id_products_id_fk",
+    table_name: "monitor_product_state",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "monitor_source_config_proxy_group_id_proxy_groups_id_fk",
+    table_name: "monitor_source_config",
+    contype: "f",
+    confdeltype: "n",
+  },
+  {
+    constraint_name: "notification_deliveries_event_channel_target_unique",
+    table_name: "notification_deliveries",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "notification_deliveries_event_id_recent_events_id_fk",
+    table_name: "notification_deliveries",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "offer_observations_product_id_products_id_fk",
+    table_name: "offer_observations",
+    contype: "f",
+    confdeltype: "a",
+  },
+  {
+    constraint_name: "products_retailer_product_id_unique",
+    table_name: "products",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "products_slug_unique",
+    table_name: "products",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "proxy_endpoints_group_id_proxy_groups_id_fk",
+    table_name: "proxy_endpoints",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "proxy_endpoints_group_protocol_host_port_username_fp_unique",
+    table_name: "proxy_endpoints",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "proxy_groups_name_unique",
+    table_name: "proxy_groups",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "push_tokens_expo_push_token_unique",
+    table_name: "push_tokens",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "push_tokens_user_id_users_id_fk",
+    table_name: "push_tokens",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "realtime_tickets_user_id_users_id_fk",
+    table_name: "realtime_tickets",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "recent_events_alert_id_alerts_id_fk",
+    table_name: "recent_events",
+    contype: "f",
+    confdeltype: "n",
+  },
+  {
+    constraint_name: "recent_events_alert_id_trigger_key_unique",
+    table_name: "recent_events",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "recent_events_product_id_products_id_fk",
+    table_name: "recent_events",
+    contype: "f",
+    confdeltype: "a",
+  },
+  {
+    constraint_name: "recent_events_user_id_users_id_fk",
+    table_name: "recent_events",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "sessions_token_unique",
+    table_name: "sessions",
+    contype: "u",
+    confdeltype: " ",
+  },
+  {
+    constraint_name: "sessions_user_id_users_id_fk",
+    table_name: "sessions",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "user_preferences_user_id_users_id_fk",
+    table_name: "user_preferences",
+    contype: "f",
+    confdeltype: "c",
+  },
+  {
+    constraint_name: "users_email_unique",
+    table_name: "users",
+    contype: "u",
+    confdeltype: " ",
+  },
+];
+
+// `pg_indexes.indexdef` renders NULLS ordering explicitly only when it is not
+// the type's default, so a plain `DESC` here (not `DESC NULLS FIRST`) is what
+// distinguishes the fixed section 6.1 indexes from the pre-0004 `DESC NULLS
+// LAST` ones the planner could not use for an `ORDER BY ... DESC` index scan.
+const expectedIndexDefinitions: Record<(typeof expectedIndexes)[number], string> = {
+  accounts_userId_idx:
+    'CREATE INDEX "accounts_userId_idx" ON public.accounts USING btree (user_id)',
+  alerts_by_product:
+    "CREATE INDEX alerts_by_product ON public.alerts USING btree (product_id) WHERE (deleted_at IS NULL)",
+  alerts_one_active_per_product:
+    "CREATE UNIQUE INDEX alerts_one_active_per_product ON public.alerts USING btree (user_id, product_id) WHERE (deleted_at IS NULL)",
+  offer_obs_by_product:
+    "CREATE INDEX offer_obs_by_product ON public.offer_observations USING btree (product_id, observed_at DESC)",
+  proxy_by_group:
+    "CREATE INDEX proxy_by_group ON public.proxy_endpoints USING btree (group_id) WHERE enabled",
+  realtime_tickets_expiry:
+    "CREATE INDEX realtime_tickets_expiry ON public.realtime_tickets USING btree (expires_at)",
+  recent_by_user:
+    "CREATE INDEX recent_by_user ON public.recent_events USING btree (user_id, occurred_at DESC)",
+  sessions_userId_idx:
+    'CREATE INDEX "sessions_userId_idx" ON public.sessions USING btree (user_id)',
+  verifications_identifier_idx:
+    "CREATE INDEX verifications_identifier_idx ON public.verifications USING btree (identifier)",
+};
 
 const postgresOptions = { max: 1, onnotice: () => undefined } as const;
 
@@ -120,6 +615,51 @@ function firstRow<T>(rows: T[]): T {
     throw new Error("Expected the query to return one row.");
   }
   return row;
+}
+
+let fixtureSequence = 0;
+// `Date.now()` alone can collide across fixtures created moments apart in
+// the same test file; the counter guarantees uniqueness.
+function nextFixtureSuffix(): string {
+  fixtureSequence += 1;
+  return `${String(Date.now())}-${String(fixtureSequence)}`;
+}
+
+function freshTriggerKey(): string {
+  return `m0-fire-${nextFixtureSuffix()}`;
+}
+
+// D6's 30-minute cooldown. `MIN_RETRIGGER_MINUTES` does not exist until M1,
+// so `fire_alert`'s cooldown argument is hard-coded here. At the config's
+// eventual 180-minute default the 2-hour backdating used below would fall
+// inside the cooldown window and mask a missing armed-gate check.
+const FIRE_ALERT_COOLDOWN_MINUTES = 30;
+
+async function callFireAlert(
+  alertId: string,
+  triggerKey: string,
+  priceCents: number,
+): Promise<string | null> {
+  const rows = await monitor<{ event_id: string | null }[]>`
+    SELECT public.fire_alert(
+      ${alertId}::uuid,
+      ${triggerKey},
+      ${priceCents},
+      ${FIRE_ALERT_COOLDOWN_MINUTES}
+    ) AS event_id
+  `;
+  return firstRow(rows).event_id;
+}
+
+async function readAlertTriggerState(
+  alertId: string,
+): Promise<{ armed: boolean; last_triggered_at: Date | null }> {
+  const rows = await migrator<{ armed: boolean; last_triggered_at: Date | null }[]>`
+    SELECT armed, last_triggered_at
+      FROM alert_trigger_state
+     WHERE alert_id = ${alertId}
+  `;
+  return firstRow(rows);
 }
 
 beforeAll(() => {
@@ -908,23 +1448,32 @@ describe("M0 PostgreSQL foundation", () => {
       },
     ]);
 
-    await migrator.unsafe(`
-      CREATE FUNCTION public.m0_default_acl_probe()
-      RETURNS integer
-      LANGUAGE sql
-      AS 'SELECT 1'
-    `);
+    // Reserved connection + BEGIN/ROLLBACK, not autocommitted DDL: this
+    // database is shared, and a leaked probe function would poison every
+    // later run.
+    const connection = await migrator.reserve();
     try {
-      const rows = await migrator<{ public_can_execute: boolean }[]>`
-        SELECT has_function_privilege(
-          'public',
-          'public.m0_default_acl_probe()',
-          'EXECUTE'
-        ) AS public_can_execute
-      `;
-      expect(rows).toEqual([{ public_can_execute: false }]);
+      await connection.unsafe("BEGIN");
+      try {
+        await connection.unsafe(`
+          CREATE FUNCTION public.m0_default_acl_probe()
+          RETURNS integer
+          LANGUAGE sql
+          AS 'SELECT 1'
+        `);
+        const rows = await connection<{ public_can_execute: boolean }[]>`
+          SELECT has_function_privilege(
+            'public',
+            'public.m0_default_acl_probe()',
+            'EXECUTE'
+          ) AS public_can_execute
+        `;
+        expect(rows).toEqual([{ public_can_execute: false }]);
+      } finally {
+        await connection.unsafe("ROLLBACK");
+      }
     } finally {
-      await migrator.unsafe("DROP FUNCTION public.m0_default_acl_probe()");
+      connection.release();
     }
   });
 
@@ -942,7 +1491,7 @@ describe("M0 PostgreSQL foundation", () => {
       migrationsTable: "__drizzle_migrations",
     });
     assertMigrationLedgerIntegrity(checkedInMigrations, migrationRows);
-    expect(migrationRows).toHaveLength(4);
+    expect(migrationRows).toHaveLength(5);
 
     const products = await migrator<
       {
@@ -988,25 +1537,31 @@ describe("M0 PostgreSQL foundation", () => {
   });
 
   it("creates preferences and trigger state through security-definer triggers", async () => {
-    const email = `m0-${String(Date.now())}@example.test`;
-    const userRows = await api<{ id: string }[]>`
-      INSERT INTO users (name, email)
-      VALUES (${email}, ${email})
-      RETURNING id
-    `;
-    const { id: userId } = firstRow(userRows);
-    const productRows = await api<{ id: string }[]>`
-      SELECT id FROM products ORDER BY slug LIMIT 1
-    `;
-    const { id: productId } = firstRow(productRows);
-    const alertRows = await api<{ id: string }[]>`
-      INSERT INTO alerts (user_id, product_id, price_threshold_cents)
-      VALUES (${userId}, ${productId}, 5499)
-      RETURNING id
-    `;
-    const { id: alertId } = firstRow(alertRows);
-
+    // `userId`/`alertId` are declared outside the `try` and guarded in
+    // `finally` so a failed insert mid-fixture can never send `undefined`
+    // into a cleanup query, and so a user created just before a later
+    // insert fails is still cleaned up.
+    let userId: string | undefined;
+    let alertId: string | undefined;
     try {
+      const email = `m0-${nextFixtureSuffix()}@example.test`;
+      const userRows = await api<{ id: string }[]>`
+        INSERT INTO users (name, email)
+        VALUES (${email}, ${email})
+        RETURNING id
+      `;
+      userId = firstRow(userRows).id;
+      const productRows = await api<{ id: string }[]>`
+        SELECT id FROM products ORDER BY slug LIMIT 1
+      `;
+      const { id: productId } = firstRow(productRows);
+      const alertRows = await api<{ id: string }[]>`
+        INSERT INTO alerts (user_id, product_id, price_threshold_cents)
+        VALUES (${userId}, ${productId}, 5499)
+        RETURNING id
+      `;
+      alertId = firstRow(alertRows).id;
+
       const preferences = await api<
         { notifications_enabled: boolean; plan: string }[]
       >`
@@ -1025,8 +1580,12 @@ describe("M0 PostgreSQL foundation", () => {
       `;
       expect(triggerState).toEqual([{ armed: true, consecutive_eligible: 0 }]);
     } finally {
-      await migrator`DELETE FROM alerts WHERE id = ${alertId}`;
-      await api`DELETE FROM users WHERE id = ${userId}`;
+      if (alertId !== undefined) {
+        await migrator`DELETE FROM alerts WHERE id = ${alertId}`;
+      }
+      if (userId !== undefined) {
+        await api`DELETE FROM users WHERE id = ${userId}`;
+      }
     }
   });
 
@@ -1129,7 +1688,7 @@ describe("M0 PostgreSQL foundation", () => {
   });
 
   it("allows the planned realtime ticket lifecycle under runtime roles", async () => {
-    const email = `m0-ticket-${String(Date.now())}@example.test`;
+    const email = `m0-ticket-${nextFixtureSuffix()}@example.test`;
     const userRows = await api<{ id: string }[]>`
       INSERT INTO users (name, email)
       VALUES (${email}, ${email})
@@ -1172,6 +1731,12 @@ describe("M0 PostgreSQL foundation", () => {
         INSERT INTO realtime_tickets (ticket_hash, user_id, expires_at)
         VALUES (decode(${expiredHash}, 'hex'), ${userId}, now() - interval '1 minute')
       `;
+      // This DELETE must stay unscoped: it runs on the `monitor` connection,
+      // and `notify_monitor` holds SELECT (expires_at, consumed_at) only on
+      // realtime_tickets, matching section 6.3 — adding `AND user_id = ...`
+      // raises 42501 (measured). This is the section 6.3 maintenance query
+      // under test; the FK cascade on user deletion removes this user's
+      // tickets regardless of what this scheduled sweep catches.
       await monitor`
         DELETE FROM realtime_tickets
          WHERE expires_at <= now()
@@ -1186,6 +1751,441 @@ describe("M0 PostgreSQL foundation", () => {
       expect(remainingRows).toEqual([{ count: "0" }]);
     } finally {
       await migrator`DELETE FROM users WHERE id = ${userId}`;
+    }
+  });
+
+  it("enforces every section 6.3 grant exactly, per column, for notify_api, notify_monitor, and public", async () => {
+    const COLUMN_PRIVILEGES = ["SELECT", "INSERT", "UPDATE"] as const;
+    const TABLE_PRIVILEGES = ["DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"] as const;
+    const MATRIX_ROLES = ["notify_api", "notify_monitor", "public"] as const;
+
+    for (const role of MATRIX_ROLES) {
+      const columnRows = await migrator<
+        { table_name: string; column_name: string; privilege: string; actual: boolean }[]
+      >`
+        SELECT
+          columns.table_name,
+          columns.column_name,
+          privilege.name AS privilege,
+          has_column_privilege(
+            ${role},
+            columns.table_name,
+            columns.column_name,
+            privilege.name
+          ) AS actual
+          FROM information_schema.columns AS columns
+          CROSS JOIN unnest(${migrator.array([...COLUMN_PRIVILEGES])}) AS privilege(name)
+         WHERE columns.table_schema = 'public'
+           AND columns.table_name = ANY(${migrator.array([...expectedTables])})
+      `;
+      const unexpectedColumnPrivileges = columnRows.filter(
+        (row) =>
+          row.actual !==
+          expectedColumnPrivilege(
+            row.table_name,
+            role,
+            row.column_name,
+            row.privilege as ColumnPrivilege,
+          ),
+      );
+      expect(unexpectedColumnPrivileges).toEqual([]);
+
+      const tableRows = await migrator<
+        { table_name: string; privilege: string; actual: boolean }[]
+      >`
+        SELECT
+          tables.name AS table_name,
+          privilege.name AS privilege,
+          has_table_privilege(${role}, tables.name, privilege.name) AS actual
+          FROM unnest(${migrator.array([...expectedTables])}) AS tables(name)
+          CROSS JOIN unnest(${migrator.array([...TABLE_PRIVILEGES])}) AS privilege(name)
+      `;
+      const unexpectedTablePrivileges = tableRows.filter(
+        (row) =>
+          row.actual !==
+          expectedTablePrivilege(row.table_name, role, row.privilege as TablePrivilege),
+      );
+      expect(unexpectedTablePrivileges).toEqual([]);
+    }
+  });
+
+  it("keeps the section 6.3 grant matrix in sync with the table inventory", () => {
+    // Deliberately compared to `expectedTables`, not the catalog: `public`
+    // holds 21 base tables including `__drizzle_migrations`. The existing
+    // "contains the complete table... inventory" test above already keeps
+    // `expectedTables` in sync with the catalog, so together the two tests
+    // mean a new `public` table cannot ship without both a catalog entry and
+    // a grant matrix row.
+    expect(Object.keys(GRANT_MATRIX).sort()).toEqual([...expectedTables].sort());
+  });
+
+  it("locks every function, trigger, constraint, and index to its exact catalog definition", async () => {
+    const functionRows = await migrator<
+      { function_name: string; prosecdef: boolean; proconfig: string[] | null }[]
+    >`
+      SELECT
+        procedure.oid::regprocedure::text AS function_name,
+        procedure.prosecdef,
+        procedure.proconfig
+        FROM pg_proc AS procedure
+        JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+       WHERE namespace.nspname = 'public'
+         AND procedure.proname = ANY(${migrator.array([...expectedFunctions])})
+       ORDER BY function_name
+    `;
+    expect(functionRows).toEqual(expectedFunctionTuples);
+
+    const triggerRows = await migrator<
+      { trigger_name: string; table_name: string; definition: string }[]
+    >`
+      SELECT
+        trigger.tgname AS trigger_name,
+        relation.relname AS table_name,
+        pg_get_triggerdef(trigger.oid) AS definition
+        FROM pg_trigger AS trigger
+        JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+        JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+       WHERE namespace.nspname = 'public'
+         AND NOT trigger.tgisinternal
+       ORDER BY trigger.tgname
+    `;
+    expect(triggerRows).toEqual(expectedTriggerDefinitions);
+
+    const constraintRows = await migrator<
+      { constraint_name: string; table_name: string; contype: string; confdeltype: string }[]
+    >`
+      SELECT
+        constraint_row.conname AS constraint_name,
+        relation.relname AS table_name,
+        constraint_row.contype,
+        constraint_row.confdeltype
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS relation ON relation.oid = constraint_row.conrelid
+        JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+       WHERE namespace.nspname = 'public'
+         AND constraint_row.contype IN ('u', 'f')
+       ORDER BY relation.relname, constraint_row.conname
+    `;
+    expect(constraintRows).toEqual(expectedUniqueAndForeignKeyConstraints);
+
+    const indexRows = await migrator<{ indexname: string; indexdef: string }[]>`
+      SELECT indexname, indexdef
+        FROM pg_indexes
+       WHERE schemaname = 'public'
+         AND indexname = ANY(${migrator.array([...expectedIndexes])})
+       ORDER BY indexname
+    `;
+    expect(indexRows).toEqual(
+      expectedIndexes.map((indexname) => ({
+        indexname,
+        indexdef: expectedIndexDefinitions[indexname],
+      })),
+    );
+  });
+
+  describe("fire_alert and the realtime trigger set (D6, D22, D23, D35)", () => {
+    type RealtimePayload = { v: number; userId: string; type: string; entityId: string };
+
+    const ORIGINAL_THRESHOLD_CENTS = 5000;
+    // Declared as `string | undefined`, not `string`: `beforeEach` assigns
+    // these one statement at a time, so a failure partway through (or on its
+    // very first INSERT) leaves one or more unset. `afterEach` still runs
+    // after a failed `beforeEach`, and without the guard below it would send
+    // `undefined` into `DELETE FROM users WHERE id = ${userId}`, which
+    // postgres.js rejects with "Undefined values are not allowed" — masking
+    // the real failure. Same hazard, same fix, as the guarded fixtures at
+    // "creates preferences and trigger state..." and
+    // "re-touches alerts.updated_at..." above.
+    let userId: string | undefined;
+    let alertId: string | undefined;
+    let secondProductId: string | undefined;
+
+    // Narrows the three fixture fields for use inside an `it()` body, which
+    // runs in a different closure than the `beforeEach` that assigns them,
+    // so TypeScript cannot narrow `string | undefined` to `string` there on
+    // its own. Only reachable once `beforeEach` has completed successfully —
+    // vitest does not run a test body after its `beforeEach` throws.
+    function requireFireAlertFixture(): {
+      userId: string;
+      alertId: string;
+      secondProductId: string;
+    } {
+      if (userId === undefined || alertId === undefined || secondProductId === undefined) {
+        throw new Error("Expected beforeEach to have created the fire_alert fixture.");
+      }
+      return { userId, alertId, secondProductId };
+    }
+
+    // `notify_migrator` cannot `SET ROLE notify_monitor` (no `pg_auth_members`
+    // row), and `notify_monitor` cannot insert these fixtures, so they are
+    // created through `notify_api` and committed rather than rolled back.
+    // `fire_alert` is then called on the dedicated `monitor` connection.
+    beforeEach(async () => {
+      const [firstSeedProduct, secondSeedProduct] = SEED_PRODUCTS;
+      if (firstSeedProduct === undefined || secondSeedProduct === undefined) {
+        throw new Error("Expected at least two seed products for this fixture.");
+      }
+      const suffix = nextFixtureSuffix();
+      const email = `m0-fire-alert-${suffix}@example.test`;
+      const userRows = await api<{ id: string }[]>`
+        INSERT INTO users (name, email) VALUES (${email}, ${email}) RETURNING id
+      `;
+      userId = firstRow(userRows).id;
+
+      const firstProductRows = await api<{ id: string }[]>`
+        SELECT id FROM products WHERE slug = ${firstSeedProduct.slug}
+      `;
+      const { id: firstProductId } = firstRow(firstProductRows);
+      const secondProductRows = await api<{ id: string }[]>`
+        SELECT id FROM products WHERE slug = ${secondSeedProduct.slug}
+      `;
+      secondProductId = firstRow(secondProductRows).id;
+
+      const alertRows = await api<{ id: string }[]>`
+        INSERT INTO alerts (user_id, product_id, price_threshold_cents)
+        VALUES (${userId}, ${firstProductId}, ${ORIGINAL_THRESHOLD_CENTS})
+        RETURNING id
+      `;
+      alertId = firstRow(alertRows).id;
+
+      await api`
+        INSERT INTO push_tokens (user_id, platform, expo_push_token)
+        VALUES (${userId}, 'ios', ${`m0-fire-alert-${suffix}`})
+      `;
+    });
+
+    afterEach(async () => {
+      // Guarded: see the declaration comment above for why `userId` can be
+      // unset here.
+      if (userId !== undefined) {
+        // The FK cascade removes the alert(s), trigger state, recent
+        // events, deliveries, preferences, push token, and any realtime
+        // tickets.
+        await migrator`DELETE FROM users WHERE id = ${userId}`;
+      }
+    });
+
+    it("fires once, refuses an immediate repeat, disarms, and delivers exactly once", async () => {
+      const { alertId } = requireFireAlertFixture();
+      const triggerKey = freshTriggerKey();
+      const eventId = await callFireAlert(alertId, triggerKey, 4500);
+      expect(eventId).not.toBeNull();
+
+      expect(await callFireAlert(alertId, triggerKey, 4500)).toBeNull();
+      expect((await readAlertTriggerState(alertId)).armed).toBe(false);
+
+      const deliveryRows = await migrator<{ count: string }[]>`
+        SELECT count(*)::text AS count
+          FROM notification_deliveries
+         WHERE event_id = ${eventId}
+      `;
+      expect(firstRow(deliveryRows).count).toBe("1");
+    });
+
+    it("refuses a disarmed alert even once its cooldown has long expired (the armed gate)", async () => {
+      const { alertId } = requireFireAlertFixture();
+      // Without this assertion, a `fire_alert` with `OR NOT v_state.armed`
+      // removed would pass every other assertion in this describe block.
+      await migrator`
+        UPDATE alert_trigger_state
+           SET armed = false, last_triggered_at = now() - interval '2 hours'
+         WHERE alert_id = ${alertId}
+      `;
+      expect(await callFireAlert(alertId, freshTriggerKey(), 4500)).toBeNull();
+    });
+
+    it("refuses inside the cooldown window even when armed", async () => {
+      const { alertId } = requireFireAlertFixture();
+      await migrator`
+        UPDATE alert_trigger_state
+           SET armed = true, last_triggered_at = now()
+         WHERE alert_id = ${alertId}
+      `;
+      expect(await callFireAlert(alertId, freshTriggerKey(), 4500)).toBeNull();
+    });
+
+    it("refuses above the current threshold without disarming (D23's stale-price race)", async () => {
+      const { alertId } = requireFireAlertFixture();
+      await migrator`
+        UPDATE alert_trigger_state
+           SET armed = true, last_triggered_at = null
+         WHERE alert_id = ${alertId}
+      `;
+      expect(
+        await callFireAlert(alertId, freshTriggerKey(), ORIGINAL_THRESHOLD_CENTS + 500),
+      ).toBeNull();
+      // A separate statement, deliberately not a same-statement subquery: a
+      // subquery would share this call's own snapshot and could not observe
+      // a write fire_alert never made.
+      expect((await readAlertTriggerState(alertId)).armed).toBe(true);
+    });
+
+    it("is idempotent when a trigger key is reused", async () => {
+      const { alertId } = requireFireAlertFixture();
+      const triggerKey = freshTriggerKey();
+      expect(await callFireAlert(alertId, triggerKey, 4500)).not.toBeNull();
+
+      await migrator`
+        UPDATE alert_trigger_state
+           SET armed = true, last_triggered_at = null
+         WHERE alert_id = ${alertId}
+      `;
+      expect(await callFireAlert(alertId, triggerKey, 4500)).toBeNull();
+      expect((await readAlertTriggerState(alertId)).armed).toBe(true);
+
+      const recentEventRows = await migrator<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM recent_events WHERE alert_id = ${alertId}
+      `;
+      expect(firstRow(recentEventRows).count).toBe("1");
+    });
+
+    it("re-arms only on a real alert change, never a no-op save (D35)", async () => {
+      const { alertId } = requireFireAlertFixture();
+      expect(await callFireAlert(alertId, freshTriggerKey(), 4500)).not.toBeNull();
+
+      const afterFire = await readAlertTriggerState(alertId);
+      expect(afterFire.armed).toBe(false);
+      expect(afterFire.last_triggered_at).not.toBeNull();
+
+      await api`
+        UPDATE alerts
+           SET price_threshold_cents = ${ORIGINAL_THRESHOLD_CENTS}, status = 'active'
+         WHERE id = ${alertId}
+      `;
+      const afterNoOpSave = await readAlertTriggerState(alertId);
+      expect(afterNoOpSave.armed).toBe(false);
+      expect(afterNoOpSave.last_triggered_at).not.toBeNull();
+
+      await api`
+        UPDATE alerts
+           SET price_threshold_cents = ${ORIGINAL_THRESHOLD_CENTS - 1000}, status = 'active'
+         WHERE id = ${alertId}
+      `;
+      const afterRealChange = await readAlertTriggerState(alertId);
+      expect(afterRealChange.armed).toBe(true);
+      expect(afterRealChange.last_triggered_at).toBeNull();
+    });
+
+    it("delivers realtime notifications for alerts, recent_events, and user_preferences changes", async () => {
+      const { userId, alertId, secondProductId } = requireFireAlertFixture();
+      const receivedPayloads: RealtimePayload[] = [];
+      // `sql.listen` opens its own dedicated connection; a manual `LISTEN`
+      // issued through `.unsafe()` on a reserved connection is never
+      // dispatched to a JS handler (measured: 0 payloads received).
+      const subscription = await migrator.listen("notify_realtime", (payload) => {
+        receivedPayloads.push(JSON.parse(payload) as RealtimePayload);
+      });
+      try {
+        // `alerts_one_active_per_product` forbids a second live alert on the
+        // fixture's product, so this insert targets the second seeded
+        // product instead (measured 23505 against the fixture's product).
+        const secondAlertRows = await api<{ id: string }[]>`
+          INSERT INTO alerts (user_id, product_id, price_threshold_cents)
+          VALUES (${userId}, ${secondProductId}, ${ORIGINAL_THRESHOLD_CENTS})
+          RETURNING id
+        `;
+        const { id: secondAlertId } = firstRow(secondAlertRows);
+
+        const recentEventRows = await migrator<{ id: string }[]>`
+          INSERT INTO recent_events (user_id, alert_id, product_id, price_cents, trigger_key)
+          VALUES (${userId}, ${alertId}, ${secondProductId}, 4500, ${freshTriggerKey()})
+          RETURNING id
+        `;
+        const { id: recentEventId } = firstRow(recentEventRows);
+
+        await api`
+          UPDATE user_preferences SET notifications_enabled = false WHERE user_id = ${userId}
+        `;
+
+        // Notifications deliver only at commit, so this polls rather than
+        // asserting immediately after the awaited inserts above.
+        await vi.waitFor(
+          () => {
+            if (receivedPayloads.length < 3) {
+              throw new Error(
+                `Expected 3 realtime payloads, received ${String(receivedPayloads.length)}.`,
+              );
+            }
+          },
+          { timeout: 4000, interval: 25 },
+        );
+
+        for (const payload of receivedPayloads) {
+          expect(Object.keys(payload).sort()).toEqual(["entityId", "type", "userId", "v"]);
+        }
+
+        expect(
+          receivedPayloads.find((payload) => payload.type === "alerts.changed"),
+        ).toMatchObject({
+          v: 1,
+          userId,
+          type: "alerts.changed",
+          entityId: secondAlertId,
+        });
+        expect(
+          receivedPayloads.find((payload) => payload.type === "recent.created"),
+        ).toMatchObject({
+          v: 1,
+          userId,
+          type: "recent.created",
+          entityId: recentEventId,
+        });
+        expect(
+          receivedPayloads.find((payload) => payload.type === "preferences.changed"),
+        ).toMatchObject({
+          v: 1,
+          userId,
+          type: "preferences.changed",
+          entityId: userId,
+        });
+      } finally {
+        await subscription.unlisten();
+      }
+    });
+  });
+
+  it("re-touches alerts.updated_at through set_updated_at on every UPDATE", async () => {
+    let userId: string | undefined;
+    let alertId: string | undefined;
+    try {
+      const email = `m0-touch-${nextFixtureSuffix()}@example.test`;
+      const userRows = await api<{ id: string }[]>`
+        INSERT INTO users (name, email) VALUES (${email}, ${email}) RETURNING id
+      `;
+      userId = firstRow(userRows).id;
+      const productRows = await api<{ id: string }[]>`
+        SELECT id FROM products ORDER BY slug LIMIT 1
+      `;
+      const { id: productId } = firstRow(productRows);
+
+      // Age `updated_at` at INSERT time, never with a later UPDATE:
+      // `alerts_touch` is BEFORE UPDATE and unconditionally overwrites
+      // `new.updated_at = now()`, so an aging UPDATE is a measured no-op —
+      // the row would never actually be old by the time it is read back.
+      // The hour-scale gap also avoids comparing two adjacent statements'
+      // millisecond-resolution timestamps directly, which is ~70% flaky.
+      const insertedRows = await api<{ id: string; updated_at: Date }[]>`
+        INSERT INTO alerts (user_id, product_id, price_threshold_cents, updated_at)
+        VALUES (${userId}, ${productId}, 5000, now() - interval '1 hour')
+        RETURNING id, updated_at
+      `;
+      const inserted = firstRow(insertedRows);
+      alertId = inserted.id;
+      expect(Date.now() - inserted.updated_at.getTime()).toBeGreaterThan(55 * 60 * 1000);
+
+      await api`UPDATE alerts SET price_threshold_cents = 5100 WHERE id = ${alertId}`;
+
+      const touchedRows = await migrator<{ updated_at: Date }[]>`
+        SELECT updated_at FROM alerts WHERE id = ${alertId}
+      `;
+      expect(Date.now() - firstRow(touchedRows).updated_at.getTime()).toBeLessThan(60 * 1000);
+    } finally {
+      if (alertId !== undefined) {
+        await migrator`DELETE FROM alerts WHERE id = ${alertId}`;
+      }
+      if (userId !== undefined) {
+        await api`DELETE FROM users WHERE id = ${userId}`;
+      }
     }
   });
 

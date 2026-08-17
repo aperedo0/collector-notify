@@ -3,6 +3,7 @@
     "allowImportingTsExtensions": true,
     "allowJs": false,
     "checkJs": false,
+    "erasableSyntaxOnly": true,
     "esModuleInterop": true,
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,

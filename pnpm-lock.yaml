@@ -6,7 +6,9 @@ settings:
 
 overrides:
   '@esbuild-kit/core-utils>esbuild': 0.25.12
-  lodash: 4.18.1
+  chevrotain>lodash: 4.18.1
+  '@chevrotain/gast>lodash': 4.18.1
+  '@chevrotain/cst-dts-gen>lodash': 4.18.1
 
 importers:
 

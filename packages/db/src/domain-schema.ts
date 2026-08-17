@@ -122,7 +122,13 @@ export const offerObservations = pgTable(
     bestPriceCents: integer("best_price_cents"),
     raw: jsonb("raw"),
   },
-  (table) => [index("offer_obs_by_product").on(table.productId, table.observedAt.desc())],
+  (table) => [
+    // NULLS FIRST is deliberate: PostgreSQL renders it back as plain `DESC`,
+    // which is what Drizzle's query-side `desc()` emits. A `DESC NULLS LAST`
+    // index carries different pathkeys, so the planner cannot use it for
+    // `ORDER BY observed_at DESC` and sorts the whole table instead.
+    index("offer_obs_by_product").on(table.productId, table.observedAt.desc().nullsFirst()),
+  ],
 );
 
 export const recentEvents = pgTable(
@@ -147,7 +153,8 @@ export const recentEvents = pgTable(
       table.alertId,
       table.triggerKey,
     ),
-    index("recent_by_user").on(table.userId, table.occurredAt.desc()),
+    // NULLS FIRST for the same reason as `offer_obs_by_product` above.
+    index("recent_by_user").on(table.userId, table.occurredAt.desc().nullsFirst()),
   ],
 );
 

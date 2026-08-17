@@ -2,6 +2,7 @@ import postgres from "postgres";
 
 import { MIGRATOR_DEFAULT_PRIVILEGES_RESET_SQL } from "./default-privileges.ts";
 import {
+  assertLocalResetTarget,
   assertLocalResetUrl,
   describeDatabaseTarget,
   migrationDatabaseUrl,
@@ -16,6 +17,10 @@ const client = postgres(databaseUrl, {
   max: 1,
   onnotice: () => undefined,
 });
+// Re-checked against the driver's own parsed options, not the URL string —
+// see assertLocalResetTarget's comment in environment.ts. postgres.js
+// connects lazily, so this still runs before any socket opens.
+assertLocalResetTarget(client.options);
 
 try {
   await client.begin(async (transaction) => {

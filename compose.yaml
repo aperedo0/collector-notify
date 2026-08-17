@@ -13,7 +13,7 @@ services:
       - notify_postgres_data:/var/lib/postgresql/data
       - ./packages/db/docker/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U notify_bootstrap -d notify"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U notify_bootstrap -d notify"]
       interval: 2s
       timeout: 5s
       retries: 30
